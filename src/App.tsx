@@ -2,39 +2,33 @@ import { useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import './App.css'
 
+type Lang = 'en' | 'ja' | 'es'
 type Step = 'email' | 'documents' | 'request'
-type Language = 'en' | 'ja' | 'es'
+type View = 'intake' | 'review' | 'draft' | 'translation'
 
-type LanguageOption = {
-  value: Language
-  label: string
-}
+type Option = { value: Lang; label: string }
+type Fact = { label: string; value: string }
 
 const MAX_FILES = 5
 const MAX_TOTAL_SIZE = 25 * 1024 * 1024
 
-const interfaceLanguageOptions: LanguageOption[] = [
+const uiOptions: Option[] = [
   { value: 'en', label: 'English' },
   { value: 'ja', label: '日本語' },
   { value: 'es', label: 'Español' },
 ]
 
-const recipientLanguageOptions: Record<
-  Language,
-  LanguageOption[]
-> = {
+const recipientOptions: Record<Lang, Option[]> = {
   en: [
     { value: 'en', label: 'English' },
     { value: 'ja', label: 'Japanese' },
     { value: 'es', label: 'Spanish' },
   ],
-
   ja: [
     { value: 'en', label: '英語' },
     { value: 'ja', label: '日本語' },
     { value: 'es', label: 'スペイン語' },
   ],
-
   es: [
     { value: 'en', label: 'Inglés' },
     { value: 'ja', label: 'Japonés' },
@@ -42,1985 +36,222 @@ const recipientLanguageOptions: Record<
   ],
 }
 
-const translations = {
+const copy = {
   en: {
-    brandTagline:
-      'Cross-border support in your language',
-
-    aiLabelFirst:
-      'AI-powered',
-
-    aiLabelSecond:
-      'Review and edit before translation',
-
-    heroLineOne:
-      'Resolve consumer issues',
-
-    heroLineTwo:
-      'in your own language',
-
-    heroDescriptionOne:
-      'Add your original message and documents',
-
-    heroDescriptionTwo:
-      'Review the case summary and draft in your language',
-
-    heroApproval:
-      'Nothing is translated or sent without your approval',
-
-    visualInputLabel:
-      'Your language',
-
-    visualInputText:
-      'I canceled but was charged again',
-
-    visualBridgeLineOne:
-      'Organizes your case',
-
-    visualBridgeLineTwo:
-      'and keeps your request clear',
-
-    visualOutputLabel:
-      'Company language',
-
-    visualOutputText:
-      'Clear and professional refund request',
-
-    cardOneTitle:
-      'Review and edit every message',
-
-    cardOneDescription:
-      'Check the complete draft in your language before translation.',
-
-    cardTwoTitle:
-      'Nothing is sent automatically',
-
-    cardTwoDescription:
-      'You decide before any message is sent or offer is accepted.',
-
-    cardThreeDirection:
-      'Example: English → Spanish',
-
-    cardThreeTitle:
-      'Translation checked against your approved message',
-
-    cardThreeDescription:
-      'Amounts, dates, and requested outcomes are checked against the English version you approved.',
-
-    approvedRequest:
-      'Approved in English',
-
-    approvedExample:
-      'I am requesting a full refund of $250',
-
-    translatedMessage:
-      'Translated into Spanish',
-
-    translatedExample:
-      'Solicito un reembolso completo de $250',
-
-    detailsMatch:
-      'Key details match',
-
-    newCase:
-      'NEW CASE',
-
-    caseTitle:
-      'Tell us what happened',
-
-    caseDescription:
-      'Enter your request and add an original message or relevant documents.',
-
-    originalMessage:
-      'Original message',
-
-    documents:
-      'Documents',
-
-    yourRequest:
-      'Your request',
-
-    emailTitle:
-      'Copy and paste the message you received',
-
-    emailDescription:
-      'Paste the original email or support message below. Include the sender, recipient, subject, and date if available.',
-
-    windows:
-      'Windows',
-
-    mac:
-      'Mac',
-
-    mobile:
-      'Mobile',
-
-    mobileAction:
-      'Press and hold → Copy → Paste',
-
-    emailPlaceholder:
-      'Paste the original email or support message here...',
-
-    controlNoticeTitle:
-      'You stay in control',
-
-    controlNotice:
-      'BridgeCase identifies confirmed facts, your statements, and missing information. Nothing is sent without your approval.',
-
-    documentTitle:
-      'Upload receipts and relevant documents',
-
-    documentDescription:
-      'If you have the original PDF, upload the complete file. BridgeCase will identify the relevant pages.',
-
-    evidenceTitle:
-      'Make sure the following information is readable',
-
-    evidenceDescription:
-      'Clear and readable documents help prevent mistakes.',
-
-    checks: [
-      'Company or seller',
-      'Amount and currency',
-      'Purchase or charge date',
-      'Order, booking, or account number',
-      'Product, service, or subscription',
-      'Cancellation, refund, or additional charge details',
+    tagline: 'Cross-border support in your language',
+    heroA: 'Resolve consumer issues', heroB: 'in your own language',
+    heroText: 'Add the original message and documents. Review the organized case and email draft in your language.',
+    approval: 'Nothing is translated or sent without your approval',
+    flowIn: 'Your language', flowInText: 'I canceled but was charged again',
+    flowOut: 'Company language', flowOutText: 'Clear and professional refund request',
+    bridgeA: 'Organizes your case', bridgeB: 'and keeps your request clear',
+    safety: [
+      ['✓','Review and edit every message','Check the complete draft in your language before translation.'],
+      ['●','Nothing is sent automatically','You decide before any message is sent or offer is accepted.'],
+      ['⇄','Translation checked against your approval','Amounts, dates, and requested outcomes are checked after translation.'],
     ],
-
-    chooseFiles:
-      'Choose PDF or image files',
-
-    chooseFilesAction:
-      'Select files from your device',
-
-    fileLimits:
-      'Up to 5 files • 20 PDF pages • 25 MB total',
-
-    fileTypes:
-      'PDF, JPG, JPEG, or PNG',
-
-    noCompressionTitle:
-      'No compression needed',
-
-    noCompression:
-      'Upload the original files whenever possible. There is no need to compress or crop them first.',
-
-    selectedFiles:
-      'Selected files',
-
-    remove:
-      'Remove',
-
-    requestTitle:
-      'What would you like the company to do?',
-
-    requestDescription:
-      'Write naturally in your own language. A normal paragraph is fine, even if it includes frustration. BridgeCase will organize the information and create a clear, professional email.',
-
-    naturalInputTitle:
-      'Write naturally in your own words',
-
-    naturalInputNote:
-      'You do not need to organize the information first. BridgeCase will do that for you.',
-
-    naturalInputExample:
-      'Example: I did not use the hotel parking lot. I told the front desk, and they said I would not be charged. However, the parking fee still appeared on my final bill. I would like a full refund.',
-
-    seeExample:
-      'See how BridgeCase will organize it',
-
-    hideExample:
-      'Hide the organized example',
-
-    organizedExampleTitle:
-      'BridgeCase will separate your message into:',
-
-    organizedExamples: [
-      'What happened',
-      'What you want the company to do',
-      'What the company should confirm',
-    ],
-
-    requestPlaceholder:
-      'Describe what happened in your own words...',
-
-    recipientLanguageTitle:
-      'Company language',
-
-    recipientLanguageDescription:
-      'Choose the language the company should receive.',
-
-    privacyTitle:
-      'Protect your private information',
-
-    privacyDescription:
-      'Do not include passwords, full card numbers, or government ID numbers.',
-
-    saveLater:
-      'Save for later',
-
-    continue:
-      'Continue',
-
-    analyze:
-      'Analyze case',
-
-    modalEyebrow:
-      'CASE INTAKE REVIEW',
-
-    modalReadyTitle:
-      'Ready to organize your case',
-
-    modalMissingTitle:
-      'More information is needed',
-
-    modalItemsReviewed:
-      'intake items reviewed',
-
-    modalOriginalMessage:
-      'Original message',
-
-    modalOriginalAdded:
-      'Added',
-
-    modalOriginalFromDocuments:
-      'No original message was added. We will look for the company and case details in the documents.',
-
-    modalOriginalMissing:
-      'Add an original message or at least one document',
-
-    modalDocuments:
-      'Documents',
-
-    modalDocumentsSelected:
-      'file(s) selected',
-
-    modalDocumentsOptional:
-      'Optional, but documents may improve accuracy',
-
-    modalRequest:
-      'Requested outcome',
-
-    modalRequestAdded:
-      'Added',
-
-    modalRequestMissing:
-      'Tell us what you want the company to do',
-
-    modalNextTitle:
-      'What you will review next',
-
-    modalNextDescription:
-      'AI will organize these items in your language',
-
-    reviewItems: [
-      'Confirmed facts',
-      'Your statements',
-      'Information not yet confirmed',
-      'Requested outcome',
-    ],
-
-    modalReview:
-      'Review inputs',
-
-    modalAddMissing:
-      'Add missing information',
-
-    modalOrganize:
-      'Organize case',
-
-    howItWorks:
-      'HOW IT WORKS',
-
-    howItWorksTitle:
-      'AI prepares. You decide.',
-
-    features: [
-      {
-        icon: 'AI',
-        title: 'AI organizes your case',
-        description:
-          'Confirmed facts, your statements, and details that still need confirmation are clearly separated.',
-      },
-      {
-        icon: 'Aa',
-        title: 'Review in your language',
-        description:
-          'Review and edit the complete email in your language before translation.',
-      },
-      {
-        icon: '⇄',
-        title: 'Translation details checked',
-        description:
-          'Amounts, dates, and requested outcomes are checked against the version you approved.',
-      },
-    ],
+    direction: 'Example: English → Spanish', approved: 'Approved in English', approvedText: 'I am requesting a full refund of $250', translated: 'Translated into Spanish', translatedText: 'Solicito un reembolso completo de $250', match: 'Key details match',
+    newCase: 'NEW CASE', caseTitle: 'Tell us what happened', caseHelp: 'Describe what you need and add the original message or relevant documents.',
+    tabs: ['Original message','Documents','Your request'],
+    emailTitle: 'Copy and paste the message you received', emailHelp: 'Paste the original email or support message. Include the sender, recipient, subject, and date if available.', emailPlaceholder: 'Paste the original email or support message here...',
+    controlTitle: 'You stay in control', controlText: 'BridgeCase separates confirmed facts, your statements, and missing information.',
+    docsTitle: 'Upload receipts and relevant documents', docsHelp: 'Upload the complete original file whenever possible.',
+    checks: ['Company or seller','Amount and currency','Purchase or charge date','Order, booking, or account number','Product, service, or subscription','Cancellation, refund, or additional-charge details'],
+    choose: 'Choose PDF or image files', select: 'Select files from your device', limits: 'Up to 5 files • 25 MB total', noCompress: 'No compression needed', noCompressText: 'Upload original files whenever possible.', selected: 'Selected files', remove: 'Remove',
+    requestTitle: 'What would you like the company to do?', requestHelp: 'Write naturally in your own language. A normal paragraph is fine, even if it includes frustration. BridgeCase will organize it and create a clear, professional email.',
+    naturalTitle: 'Write naturally in your own words', naturalNote: 'You do not need to organize the information first.', naturalExample: 'Example: I did not use the hotel parking lot. I told the front desk and was told I would not be charged, but the fee appeared on my final bill. I want a refund.',
+    showStructure: 'See how BridgeCase will organize it', hideStructure: 'Hide the organized example', structure: ['What happened','What you want the company to do','What the company should confirm'], placeholder: 'Describe what happened in your own words...',
+    companyLang: 'Company language', companyLangHelp: 'Choose the language the company should receive.', privacy: 'Protect your private information', privacyText: 'Do not include passwords, full card numbers, or government ID numbers.', save: 'Save for later', next: 'Continue', analyze: 'Analyze case',
+    modalLabel: 'CASE INTAKE REVIEW', ready: 'Ready to organize your case', missing: 'More information is needed', sourceMissing: 'Add an original message or at least one document', sourceFromDocs: 'No message was added. Company and case details will be checked in the documents.', requestMissing: 'Tell us what you want the company to do', optionalDocs: 'Optional, but documents may improve accuracy', added: 'Added', organize: 'Organize case', reviewInputs: 'Review inputs',
+    progress: ['Intake','Case review','Draft','Translation'],
+    demo: 'DEMO CASE REVIEW', reviewTitle: 'Review the organized case', reviewHelp: 'This sample shows how BridgeCase will organize your information. Review and edit it before creating the email.', demoTitle: 'Demo results', demoText: 'Sample data is shown to test the flow. Real PDF and email analysis will be connected later.',
+    sections: ['Confirmed from documents','Your statements','Requested outcome','Not yet confirmed','Add to the email'], edit: 'Edit', done: 'Done', back: 'Back to inputs', createDraft: 'Create email draft',
+    factLabels: ['Company or property','Stay dates','Reservation number','Disputed charge','Disputed amount','Contact method'], factValues: ['Example Hotel','September 13–18, 2026','HTL-12345','Daily parking fee','$50.00','Billing department listed on the receipt'],
+    statements: ['I did not use the hotel parking lot.','I told the front desk that I was not parking a car.','The front desk said that I would not be charged.','The parking fee still appeared on the final bill.'],
+    outcome: 'Refund the full parking charge of $50.', unknown: ['The type of parking document provided by the front desk','Why the hotel recorded parking use','When the refund will be processed'], options: ['Ask why the parking charge was added','Ask when the refund will be processed','Ask for written confirmation of the refund'],
+    draftLabel: 'EMAIL DRAFT', draftTitle: 'Review the email in your language', draftHelp: 'Edit the complete email before translation. Nothing will be translated or sent until you approve it.', subject: 'Subject', message: 'Message',
+    draftSubject: 'Request for refund of incorrect parking charges',
+    draftBody: `Dear Billing Team,\n\nI reviewed the final bill for my stay and found parking charges that I believe were added incorrectly.\n\nI did not use the hotel parking lot during my stay. I also informed the front desk that I was not parking a car, and I was told that I would not be charged. However, the parking charges still appeared on my final bill.\n\nPlease review these charges and refund the full parking amount of $50. I would also appreciate an explanation of why the charges were added and confirmation of when the refund will be processed.\n\nThank you for your assistance.`,
+    polite: 'Make more polite', shorter: 'Make shorter', restore: 'Restore original draft', approveDraft: 'Approve and translate',
+    translationLabel: 'TRANSLATION REVIEW', translationTitle: 'Review the translated email', translationHelp: 'Compare the translated email with the approved version. The email has not been sent.', approvedVersion: 'Approved version', translatedVersion: 'Translated version', verify: 'Important details verified', safe: 'The important details match the approved version.', verification: ['$50 refund request','Parking charge dispute','Request for an explanation','Request for the refund date'], backDraft: 'Back to draft', approveTranslation: 'Approve translation', completion: 'Translation approved', completionText: 'The email is ready for the next step. It has not been sent.', copyEmail: 'Copy email', openEmail: 'Create email draft', notSent: 'Nothing has been sent', editTranslation: 'Edit translation', approvalEditNote: 'Returning to an earlier step will require translation approval again.', addMissing: 'Add missing information',
   },
-
   ja: {
-    brandTagline:
-      '海外企業との問題をあなたの言語で',
-
-    aiLabelFirst:
-      'AIを活用',
-
-    aiLabelSecond:
-      '翻訳前に確認・修正',
-
-    heroLineOne:
-      '海外企業との問題を',
-
-    heroLineTwo:
-      '日本語で解決へ',
-
-    heroDescriptionOne:
-      '元のメッセージと資料を入力',
-
-    heroDescriptionTwo:
-      '整理された案件内容とメール案を日本語で確認できます',
-
-    heroApproval:
-      'あなたの承認なしに翻訳・送信されることはありません',
-
-    visualInputLabel:
-      'あなたの言語',
-
-    visualInputText:
-      '解約後に再請求されました',
-
-    visualBridgeLineOne:
-      '案件を整理し',
-
-    visualBridgeLineTwo:
-      '希望を明確にします',
-
-    visualOutputLabel:
-      '相手企業の言語',
-
-    visualOutputText:
-      '丁寧で明確な返金依頼',
-
-    cardOneTitle:
-      'すべての文面を確認・修正',
-
-    cardOneDescription:
-      '翻訳前に日本語で全文を確認し、必要な部分を修正できます。',
-
-    cardTwoTitle:
-      '自動で送信・合意しません',
-
-    cardTwoDescription:
-      'メッセージの送信や相手の提案への合意は、必ずあなたが判断します。',
-
-    cardThreeDirection:
-      '例：日本語 → 英語',
-
-    cardThreeTitle:
-      '翻訳後の内容を照合',
-
-    cardThreeDescription:
-      '金額、日付、希望する対応が、承認した内容と一致しているか確認します。',
-
-    approvedRequest:
-      '日本語で承認',
-
-    approvedExample:
-      '250ドルの全額返金を希望します',
-
-    translatedMessage:
-      '英語へ翻訳',
-
-    translatedExample:
-      'I am requesting a full refund of $250',
-
-    detailsMatch:
-      '金額と希望する対応が一致',
-
-    newCase:
-      '新しい案件',
-
-    caseTitle:
-      '何が起きたか教えてください',
-
-    caseDescription:
-      '希望する対応を入力し、元のメッセージまたは関連資料を追加してください。',
-
-    originalMessage:
-      '元のメッセージ',
-
-    documents:
-      '関連資料',
-
-    yourRequest:
-      '希望する対応',
-
-    emailTitle:
-      '受け取ったメッセージをコピーして貼り付け',
-
-    emailDescription:
-      '元のメールやサポートメッセージを貼り付けてください。可能であれば、送信者、受信者、件名、日付も含めてください。',
-
-    windows:
-      'Windows',
-
-    mac:
-      'Mac',
-
-    mobile:
-      'スマートフォン',
-
-    mobileAction:
-      '長押し → コピー → 貼り付け',
-
-    emailPlaceholder:
-      '受け取ったメールやサポートメッセージを貼り付けてください...',
-
-    controlNoticeTitle:
-      '最終判断はあなたが行います',
-
-    controlNotice:
-      'BridgeCaseが確認できた事実、利用者の説明、不足情報を整理します。承認なしに送信されることはありません。',
-
-    documentTitle:
-      '領収書や関連資料をアップロード',
-
-    documentDescription:
-      '元のPDFがある場合は、ファイル全体をアップロードしてください。BridgeCaseが関連ページを見つけます。',
-
-    evidenceTitle:
-      '次の情報が読めることを確認',
-
-    evidenceDescription:
-      '明確に読める資料を使用することで、誤りを防ぎやすくなります。',
-
-    checks: [
-      '会社名または販売者名',
-      '金額と通貨',
-      '購入日または請求日',
-      '注文番号、予約番号、アカウント番号',
-      '商品、サービス、契約プラン',
-      '解約、返金、追加請求に関する情報',
-    ],
-
-    chooseFiles:
-      'PDFまたは画像を選択',
-
-    chooseFilesAction:
-      '端末からファイルを選択',
-
-    fileLimits:
-      '最大5ファイル • PDF合計20ページ • 合計25MB',
-
-    fileTypes:
-      'PDF、JPG、JPEG、PNG',
-
-    noCompressionTitle:
-      '圧縮する必要はありません',
-
-    noCompression:
-      '可能な限り元のファイルをアップロードしてください。事前の圧縮や切り抜きは不要です。',
-
-    selectedFiles:
-      '選択したファイル',
-
-    remove:
-      '削除',
-
-    requestTitle:
-      '企業にどのような対応を希望しますか？',
-
-    requestDescription:
-      '自分の言葉で普通に書いてください。文章でも、箇条書きでも、多少フラストレーションが含まれていても大丈夫です。BridgeCaseが内容を整理し、適切で丁寧なメールを作成します。',
-
-    naturalInputTitle:
-      '自然な文章で入力できます',
-
-    naturalInputNote:
-      '最初から内容を整理する必要はありません。BridgeCaseが整理します。',
-
-    naturalInputExample:
-      '例：ホテルの駐車場は利用していません。フロントにも利用していないと伝え、その際には請求されないと言われました。しかし、最終明細には駐車料金が入っていました。誤って請求された駐車料金を返金してほしいです。',
-
-    seeExample:
-      'BridgeCaseが整理する内容を見る',
-
-    hideExample:
-      '整理する内容を閉じる',
-
-    organizedExampleTitle:
-      'BridgeCaseが次の内容に整理します',
-
-    organizedExamples: [
-      '何が起きたか',
-      '企業に何をしてほしいか',
-      '何を確認してほしいか',
-    ],
-
-    requestPlaceholder:
-      '起きたことを自分の言葉で入力してください...',
-
-    recipientLanguageTitle:
-      '相手企業へ送る言語',
-
-    recipientLanguageDescription:
-      '相手企業が受け取るメールの言語を選択してください。',
-
-    privacyTitle:
-      '個人情報を保護してください',
-
-    privacyDescription:
-      'パスワード、カード番号全体、公的な身分証番号は入力しないでください。',
-
-    saveLater:
-      '後で保存',
-
-    continue:
-      '続ける',
-
-    analyze:
-      '案件を分析',
-
-    modalEyebrow:
-      '入力内容の確認',
-
-    modalReadyTitle:
-      '案件内容を整理する準備ができました',
-
-    modalMissingTitle:
-      '追加情報が必要です',
-
-    modalItemsReviewed:
-      '件の入力項目を確認しました',
-
-    modalOriginalMessage:
-      '元のメッセージ',
-
-    modalOriginalAdded:
-      '入力されています',
-
-    modalOriginalFromDocuments:
-      '元のメッセージはありません。関連資料から会社名や案件情報を確認します。',
-
-    modalOriginalMissing:
-      '元のメッセージまたは関連資料を追加してください',
-
-    modalDocuments:
-      '関連資料',
-
-    modalDocumentsSelected:
-      '件のファイルを選択済み',
-
-    modalDocumentsOptional:
-      '任意ですが、資料を追加すると精度が上がります',
-
-    modalRequest:
-      '希望する対応',
-
-    modalRequestAdded:
-      '入力されています',
-
-    modalRequestMissing:
-      '企業に何をしてほしいか入力してください',
-
-    modalNextTitle:
-      '分析後に確認する内容',
-
-    modalNextDescription:
-      'AIが次の項目を日本語で整理します',
-
-    reviewItems: [
-      '確認できた事実',
-      '利用者が説明した内容',
-      'まだ確認できない情報',
-      '企業へ希望する対応',
-    ],
-
-    modalReview:
-      '入力内容を確認',
-
-    modalAddMissing:
-      '不足情報を入力',
-
-    modalOrganize:
-      '案件内容を整理',
-
-    howItWorks:
-      '仕組み',
-
-    howItWorksTitle:
-      'AIが整理し、あなたが判断',
-
-    features: [
-      {
-        icon: 'AI',
-        title: 'AIが案件内容を整理',
-        description:
-          '確認できた事実、利用者の説明、まだ確認が必要な情報を分けて整理します。',
-      },
-      {
-        icon: 'Aa',
-        title: '日本語で全文を確認',
-        description:
-          '翻訳前にメール全体を日本語で確認し、自由に修正できます。',
-      },
-      {
-        icon: '⇄',
-        title: '翻訳後の内容を照合',
-        description:
-          '金額、日付、希望する対応が、承認した内容と一致しているか確認します。',
-      },
-    ],
+    tagline: '海外企業との問題をあなたの言語で',
+    heroA: '海外企業との問題を', heroB: '日本語で解決へ',
+    heroText: '元のメッセージと資料を入力し、整理された案件内容とメール案を日本語で確認できます', approval: 'あなたの承認なしに翻訳・送信されることはありません',
+    flowIn: 'あなたの言語', flowInText: '解約後に再請求されました', flowOut: '相手企業の言語', flowOutText: '丁寧で明確な返金依頼', bridgeA: '案件を整理し', bridgeB: '希望を明確にします',
+    safety: [['✓','すべての文面を確認・修正','翻訳前に日本語で全文を確認し、必要な部分を修正できます。'],['●','自動で送信・合意しません','メッセージの送信や相手の提案への合意は、必ずあなたが判断します。'],['⇄','翻訳後の内容を照合','金額、日付、希望する対応が承認した内容と一致しているか確認します。']],
+    direction: '例：日本語 → 英語', approved: '日本語で承認', approvedText: '250ドルの全額返金を希望します', translated: '英語へ翻訳', translatedText: 'I am requesting a full refund of $250', match: '金額と希望する対応が一致',
+    newCase: '新しい案件', caseTitle: '何が起きたか教えてください', caseHelp: '希望する対応を入力し、元のメッセージまたは関連資料を追加してください。', tabs: ['元のメッセージ','関連資料','希望する対応'],
+    emailTitle: '受け取ったメッセージをコピーして貼り付け', emailHelp: '元のメールやサポートメッセージを貼り付けてください。可能であれば送信者、受信者、件名、日付も含めてください。', emailPlaceholder: '受け取ったメールやサポートメッセージを貼り付けてください...', controlTitle: '最終判断はあなたが行います', controlText: 'BridgeCaseが確認できた事実、利用者の説明、不足情報を整理します。',
+    docsTitle: '領収書や関連資料をアップロード', docsHelp: '可能な限り元のファイル全体をアップロードしてください。', checks: ['会社名または販売者名','金額と通貨','購入日または請求日','注文番号、予約番号、アカウント番号','商品、サービス、契約プラン','解約、返金、追加請求に関する情報'], choose: 'PDFまたは画像を選択', select: '端末からファイルを選択', limits: '最大5ファイル • 合計25MB', noCompress: '圧縮する必要はありません', noCompressText: '可能な限り元のファイルをアップロードしてください。', selected: '選択したファイル', remove: '削除',
+    requestTitle: '企業にどのような対応を希望しますか？', requestHelp: '自分の言葉で普通に書いてください。文章でも、箇条書きでも、多少フラストレーションが含まれていても大丈夫です。BridgeCaseが内容を整理し、適切で丁寧なメールを作成します。', naturalTitle: '自然な文章で入力できます', naturalNote: '最初から内容を整理する必要はありません。', naturalExample: '例：ホテルの駐車場は利用していません。フロントにも利用していないと伝え、請求されないと言われましたが、最終明細に駐車料金が入っていました。返金してほしいです。', showStructure: 'BridgeCaseが整理する内容を見る', hideStructure: '整理する内容を閉じる', structure: ['何が起きたか','企業に何をしてほしいか','何を確認してほしいか'], placeholder: '起きたことを自分の言葉で入力してください...', companyLang: '相手企業へ送る言語', companyLangHelp: '相手企業が受け取るメールの言語を選択してください。', privacy: '個人情報を保護してください', privacyText: 'パスワード、カード番号全体、公的な身分証番号は入力しないでください。', save: '後で保存', next: '続ける', analyze: '案件を分析',
+    modalLabel: '入力内容の確認', ready: '案件内容を整理する準備ができました', missing: '追加情報が必要です', sourceMissing: '元のメッセージまたは関連資料を追加してください', sourceFromDocs: '元のメッセージはありません。関連資料から会社名や案件情報を確認します。', requestMissing: '企業に何をしてほしいか入力してください', optionalDocs: '任意ですが、資料を追加すると精度が上がります', added: '入力されています', organize: '案件内容を整理', reviewInputs: '入力内容を確認',
+    progress: ['入力','案件確認','メール案','翻訳確認'], demo: 'デモ用案件整理', reviewTitle: '整理された案件内容を確認', reviewHelp: 'BridgeCaseが情報をどのように整理するかを示しています。メール案を作成する前に確認・修正してください。', demoTitle: 'デモ用の整理結果です', demoText: '現在は画面フロー確認用のサンプル情報です。PDFとメールの実際の解析は後から接続します。', sections: ['資料から確認できた内容','あなたが説明した内容','希望する対応','まだ確認できない内容','メールへ追加する内容'], edit: '編集', done: '完了', back: '入力画面へ戻る', createDraft: '日本語のメール案を作成',
+    factLabels: ['会社・施設名','宿泊期間','予約番号','問題の請求項目','問題の請求額','連絡先'], factValues: ['Example Hotel','2026年9月13日〜18日','HTL-12345','1日ごとの駐車料金','50.00ドル','領収書に記載された請求担当窓口'], statements: ['ホテルの駐車場を利用していません。','フロントで駐車していないことを伝えました。','フロントから駐車料金は請求されないと説明されました。','最終明細には駐車料金が記載されていました。'], outcome: '誤って請求された駐車料金50ドルを全額返金してほしい。', unknown: ['フロントで渡された駐車に関する書類の種類','ホテルが駐車場を利用したと判断した理由','返金が処理される予定日'], options: ['駐車料金が追加された理由を確認する','返金処理の予定日を確認する','返金の書面による確認を依頼する'],
+    draftLabel: 'メール案', draftTitle: '日本語のメール案を確認', draftHelp: '翻訳前にメール全文を確認・修正してください。承認するまで翻訳も送信も行いません。', subject: '件名', message: '本文', draftSubject: '誤って請求された駐車料金の返金について', draftBody: `ご担当者様\n\n宿泊後に受け取った最終明細を確認したところ、誤って追加されたと思われる駐車料金が記載されていました。\n\n私は宿泊中にホテルの駐車場を利用していません。フロントにも駐車していないことを伝え、その際には駐車料金は請求されないとの説明を受けました。しかし、最終明細には駐車料金が含まれていました。\n\n請求内容をご確認のうえ、誤って請求された駐車料金50ドルを全額返金していただけますでしょうか。また、駐車料金が追加された理由と、返金処理の予定日についてもご連絡をお願いいたします。\n\nよろしくお願いいたします。`, polite: 'さらに丁寧にする', shorter: '短くする', restore: '元のメール案へ戻す', approveDraft: '承認して翻訳',
+    translationLabel: '翻訳内容の確認', translationTitle: '翻訳後のメールを確認', translationHelp: '承認した日本語と翻訳後のメールを比較してください。メールはまだ送信されていません。', approvedVersion: '承認した日本語', translatedVersion: '英語への翻訳', verify: '重要事項を照合済み', safe: '重要事項は承認した日本語と一致しています。', verification: ['50ドルの全額返金','駐車料金の誤請求','請求理由の確認','返金予定日の確認'], backDraft: 'メール案へ戻る', approveTranslation: '翻訳内容を承認', completion: '翻訳後のメールを承認しました', completionText: 'メールは次の操作に進める状態です。まだ送信されていません。', copyEmail: 'メールをコピー', openEmail: 'メールの下書きを作成', notSent: 'まだ何も送信されていません', editTranslation: '翻訳内容を修正', approvalEditNote: '前の画面で内容を変更した場合は、翻訳内容の再確認が必要です。', addMissing: '不足情報を入力',
   },
-
   es: {
-    brandTagline:
-      'Asistencia internacional en tu idioma',
-
-    aiLabelFirst:
-      'Con tecnología de IA',
-
-    aiLabelSecond:
-      'Revisa y edita antes de traducir',
-
-    heroLineOne:
-      'Resuelve problemas con empresas',
-
-    heroLineTwo:
-      'en tu propio idioma',
-
-    heroDescriptionOne:
-      'Añade el mensaje original y los documentos',
-
-    heroDescriptionTwo:
-      'Revisa en español el resumen del caso y el borrador',
-
-    heroApproval:
-      'Nada se traduce ni se envía sin tu aprobación',
-
-    visualInputLabel:
-      'Tu idioma',
-
-    visualInputText:
-      'Cancelé el servicio pero me cobraron de nuevo',
-
-    visualBridgeLineOne:
-      'Organiza tu caso',
-
-    visualBridgeLineTwo:
-      'y aclara lo que solicitas',
-
-    visualOutputLabel:
-      'Idioma de la empresa',
-
-    visualOutputText:
-      'Solicitud de reembolso clara y profesional',
-
-    cardOneTitle:
-      'Revisa y edita cada mensaje',
-
-    cardOneDescription:
-      'Revisa el borrador completo en español antes de traducirlo.',
-
-    cardTwoTitle:
-      'Nada se envía automáticamente',
-
-    cardTwoDescription:
-      'Tú decides antes de enviar un mensaje o aceptar una oferta.',
-
-    cardThreeDirection:
-      'Ejemplo: Español → Inglés',
-
-    cardThreeTitle:
-      'Verificamos la traducción',
-
-    cardThreeDescription:
-      'Comprobamos que los importes, las fechas y lo que solicitaste coincidan con la versión que aprobaste.',
-
-    approvedRequest:
-      'Aprobado en español',
-
-    approvedExample:
-      'Solicito un reembolso completo de $250',
-
-    translatedMessage:
-      'Traducido al inglés',
-
-    translatedExample:
-      'I am requesting a full refund of $250',
-
-    detailsMatch:
-      'Los datos clave coinciden',
-
-    newCase:
-      'NUEVO CASO',
-
-    caseTitle:
-      'Cuéntanos qué ocurrió',
-
-    caseDescription:
-      'Escribe lo que necesitas y añade el mensaje original o los documentos relacionados.',
-
-    originalMessage:
-      'Mensaje original',
-
-    documents:
-      'Documentos',
-
-    yourRequest:
-      'Tu solicitud',
-
-    emailTitle:
-      'Copia y pega el mensaje que recibiste',
-
-    emailDescription:
-      'Copia el correo o mensaje de soporte original y pégalo abajo. Incluye el remitente, el destinatario, el asunto y la fecha si están disponibles.',
-
-    windows:
-      'Windows',
-
-    mac:
-      'Mac',
-
-    mobile:
-      'Móvil',
-
-    mobileAction:
-      'Mantén pulsado → Copiar → Pegar',
-
-    emailPlaceholder:
-      'Pega aquí el correo o mensaje de soporte original...',
-
-    controlNoticeTitle:
-      'Tú mantienes el control',
-
-    controlNotice:
-      'BridgeCase identifica los hechos confirmados, lo que explicaste y la información que falta. Nada se envía sin tu aprobación.',
-
-    documentTitle:
-      'Sube recibos y documentos relacionados',
-
-    documentDescription:
-      'Si tienes el PDF original, sube el archivo completo. BridgeCase identificará las páginas relevantes.',
-
-    evidenceTitle:
-      'Comprueba que esta información sea legible',
-
-    evidenceDescription:
-      'Los documentos claros y legibles ayudan a evitar errores.',
-
-    checks: [
-      'Empresa o vendedor',
-      'Importe y moneda',
-      'Fecha de compra o cobro',
-      'Número de pedido, reserva o cuenta',
-      'Producto, servicio o suscripción',
-      'Detalles de cancelación, reembolso o cobro adicional',
-    ],
-
-    chooseFiles:
-      'Elige archivos PDF o imágenes',
-
-    chooseFilesAction:
-      'Selecciona archivos de tu dispositivo',
-
-    fileLimits:
-      'Hasta 5 archivos • 20 páginas PDF • 25 MB en total',
-
-    fileTypes:
-      'PDF, JPG, JPEG o PNG',
-
-    noCompressionTitle:
-      'No necesitas comprimirlos',
-
-    noCompression:
-      'Sube los archivos originales siempre que sea posible. No es necesario comprimirlos ni recortarlos.',
-
-    selectedFiles:
-      'Archivos seleccionados',
-
-    remove:
-      'Eliminar',
-
-    requestTitle:
-      '¿Qué quieres que haga la empresa?',
-
-    requestDescription:
-      'Escribe con naturalidad en tu idioma. Puedes usar un párrafo, viñetas o expresar tu frustración. BridgeCase organizará la información y creará un correo claro y profesional.',
-
-    naturalInputTitle:
-      'Escribe con naturalidad',
-
-    naturalInputNote:
-      'No necesitas organizar la información primero. BridgeCase lo hará por ti.',
-
-    naturalInputExample:
-      'Ejemplo: No utilicé el estacionamiento del hotel. Se lo dije a recepción y me dijeron que no me cobrarían. Sin embargo, el cargo apareció en la factura final. Quiero que me reembolsen el cargo.',
-
-    seeExample:
-      'Ver cómo BridgeCase organizará el mensaje',
-
-    hideExample:
-      'Ocultar la estructura',
-
-    organizedExampleTitle:
-      'BridgeCase separará el mensaje en:',
-
-    organizedExamples: [
-      'Qué ocurrió',
-      'Qué quieres que haga la empresa',
-      'Qué debe confirmar la empresa',
-    ],
-
-    requestPlaceholder:
-      'Describe lo ocurrido con tus propias palabras...',
-
-    recipientLanguageTitle:
-      'Idioma para la empresa',
-
-    recipientLanguageDescription:
-      'Elige el idioma del correo que recibirá la empresa.',
-
-    privacyTitle:
-      'Protege tu información privada',
-
-    privacyDescription:
-      'No incluyas contraseñas, números completos de tarjetas ni números de identificación oficial.',
-
-    saveLater:
-      'Guardar para después',
-
-    continue:
-      'Continuar',
-
-    analyze:
-      'Analizar el caso',
-
-    modalEyebrow:
-      'REVISIÓN DE DATOS',
-
-    modalReadyTitle:
-      'Todo está listo para organizar el caso',
-
-    modalMissingTitle:
-      'Se necesita más información',
-
-    modalItemsReviewed:
-      'elementos revisados',
-
-    modalOriginalMessage:
-      'Mensaje original',
-
-    modalOriginalAdded:
-      'Añadido',
-
-    modalOriginalFromDocuments:
-      'No hay un mensaje original. Buscaremos la empresa y los datos del caso en los documentos.',
-
-    modalOriginalMissing:
-      'Añade el mensaje original o al menos un documento',
-
-    modalDocuments:
-      'Documentos',
-
-    modalDocumentsSelected:
-      'archivo(s) seleccionado(s)',
-
-    modalDocumentsOptional:
-      'Es opcional, pero puede mejorar la precisión',
-
-    modalRequest:
-      'Resultado solicitado',
-
-    modalRequestAdded:
-      'Añadido',
-
-    modalRequestMissing:
-      'Indica qué quieres que haga la empresa',
-
-    modalNextTitle:
-      'Qué revisarás después',
-
-    modalNextDescription:
-      'La IA organizará esta información en español',
-
-    reviewItems: [
-      'Hechos confirmados',
-      'Lo que explicaste',
-      'Información aún no confirmada',
-      'Lo que solicitas a la empresa',
-    ],
-
-    modalReview:
-      'Revisar los datos',
-
-    modalAddMissing:
-      'Añadir la información',
-
-    modalOrganize:
-      'Organizar el caso',
-
-    howItWorks:
-      'CÓMO FUNCIONA',
-
-    howItWorksTitle:
-      'La IA prepara. Tú decides.',
-
-    features: [
-      {
-        icon: 'AI',
-        title: 'La IA organiza tu caso',
-        description:
-          'Los hechos confirmados, lo que explicaste y los datos que aún deben verificarse se separan claramente.',
-      },
-      {
-        icon: 'Aa',
-        title: 'Revisa todo en español',
-        description:
-          'Revisa y edita el correo completo en español antes de traducirlo.',
-      },
-      {
-        icon: '⇄',
-        title: 'Verificamos la traducción',
-        description:
-          'Comprobamos que los importes, las fechas y lo que solicitaste coincidan con la versión que aprobaste.',
-      },
-    ],
+    tagline: 'Asistencia internacional en tu idioma', heroA: 'Resuelve problemas con empresas', heroB: 'en tu propio idioma', heroText: 'Añade el mensaje original y los documentos. Revisa el caso y el borrador en español.', approval: 'Nada se traduce ni se envía sin tu aprobación', flowIn: 'Tu idioma', flowInText: 'Cancelé el servicio pero me cobraron de nuevo', flowOut: 'Idioma de la empresa', flowOutText: 'Solicitud de reembolso clara y profesional', bridgeA: 'Organiza tu caso', bridgeB: 'y aclara lo que solicitas',
+    safety: [['✓','Revisa y edita cada mensaje','Revisa el borrador completo en español antes de traducirlo.'],['●','Nada se envía automáticamente','Tú decides antes de enviar un mensaje o aceptar una oferta.'],['⇄','Verificamos la traducción','Comprobamos los importes, las fechas y lo solicitado después de traducir.']], direction: 'Ejemplo: Español → Inglés', approved: 'Aprobado en español', approvedText: 'Solicito un reembolso completo de $250', translated: 'Traducido al inglés', translatedText: 'I am requesting a full refund of $250', match: 'Los datos clave coinciden',
+    newCase: 'NUEVO CASO', caseTitle: 'Cuéntanos qué ocurrió', caseHelp: 'Escribe lo que necesitas y añade el mensaje original o documentos.', tabs: ['Mensaje original','Documentos','Tu solicitud'], emailTitle: 'Copia y pega el mensaje que recibiste', emailHelp: 'Pega el correo o mensaje original. Incluye remitente, destinatario, asunto y fecha si están disponibles.', emailPlaceholder: 'Pega aquí el mensaje original...', controlTitle: 'Tú mantienes el control', controlText: 'BridgeCase separa los hechos confirmados, tus explicaciones y la información que falta.', docsTitle: 'Sube recibos y documentos relacionados', docsHelp: 'Sube el archivo original completo siempre que sea posible.', checks: ['Empresa o vendedor','Importe y moneda','Fecha de compra o cobro','Número de pedido, reserva o cuenta','Producto, servicio o suscripción','Detalles de cancelación, reembolso o cobro adicional'], choose: 'Elige archivos PDF o imágenes', select: 'Selecciona archivos de tu dispositivo', limits: 'Hasta 5 archivos • 25 MB en total', noCompress: 'No necesitas comprimirlos', noCompressText: 'Sube los archivos originales siempre que sea posible.', selected: 'Archivos seleccionados', remove: 'Eliminar',
+    requestTitle: '¿Qué quieres que haga la empresa?', requestHelp: 'Escribe con naturalidad. Puedes usar un párrafo, viñetas o expresar tu frustración. BridgeCase organizará la información y creará un correo profesional.', naturalTitle: 'Escribe con naturalidad', naturalNote: 'No necesitas organizar la información primero.', naturalExample: 'Ejemplo: No utilicé el estacionamiento. Se lo dije a recepción y me dijeron que no me cobrarían, pero el cargo apareció en la factura. Quiero un reembolso.', showStructure: 'Ver cómo BridgeCase organizará el mensaje', hideStructure: 'Ocultar la estructura', structure: ['Qué ocurrió','Qué quieres que haga la empresa','Qué debe confirmar la empresa'], placeholder: 'Describe lo ocurrido con tus propias palabras...', companyLang: 'Idioma para la empresa', companyLangHelp: 'Elige el idioma del correo que recibirá la empresa.', privacy: 'Protege tu información privada', privacyText: 'No incluyas contraseñas, números completos de tarjetas ni identificación oficial.', save: 'Guardar para después', next: 'Continuar', analyze: 'Analizar el caso', modalLabel: 'REVISIÓN DE DATOS', ready: 'Todo está listo para organizar el caso', missing: 'Se necesita más información', sourceMissing: 'Añade el mensaje original o al menos un documento', sourceFromDocs: 'No hay mensaje. Buscaremos los datos del caso en los documentos.', requestMissing: 'Indica qué quieres que haga la empresa', optionalDocs: 'Opcional, pero puede mejorar la precisión', added: 'Añadido', organize: 'Organizar el caso', reviewInputs: 'Revisar los datos',
+    progress: ['Datos','Revisión','Borrador','Traducción'], demo: 'REVISIÓN DE DEMOSTRACIÓN', reviewTitle: 'Revisa el caso organizado', reviewHelp: 'Esta muestra enseña cómo BridgeCase organizará la información. Revísala antes de crear el correo.', demoTitle: 'Resultados de demostración', demoText: 'Se muestran datos de ejemplo para probar el flujo. El análisis real se conectará después.', sections: ['Confirmado en los documentos','Lo que explicaste','Resultado solicitado','Aún no confirmado','Añadir al correo'], edit: 'Editar', done: 'Listo', back: 'Volver a los datos', createDraft: 'Crear borrador', factLabels: ['Empresa o alojamiento','Fechas de estancia','Número de reserva','Cargo cuestionado','Importe cuestionado','Método de contacto'], factValues: ['Example Hotel','13–18 de septiembre de 2026','HTL-12345','Cargo diario de estacionamiento','$50.00','Departamento de facturación del recibo'], statements: ['No utilicé el estacionamiento del hotel.','Informé a recepción de que no había estacionado.','Recepción dijo que no se me cobraría.','El cargo apareció en la factura final.'], outcome: 'Reembolso completo del cargo de estacionamiento de $50.', unknown: ['Tipo de documento entregado en recepción','Por qué el hotel registró el uso','Cuándo se procesará el reembolso'], options: ['Preguntar por qué se añadió el cargo','Preguntar cuándo se procesará el reembolso','Solicitar confirmación escrita'],
+    draftLabel: 'BORRADOR', draftTitle: 'Revisa el correo en español', draftHelp: 'Edita el correo antes de traducirlo. Nada se enviará hasta que lo apruebes.', subject: 'Asunto', message: 'Mensaje', draftSubject: 'Solicitud de reembolso por cargos incorrectos de estacionamiento', draftBody: `Estimado equipo de facturación:\n\nRevisé la factura final y encontré cargos de estacionamiento que considero incorrectos.\n\nNo utilicé el estacionamiento del hotel. Informé a recepción y me dijeron que no se me cobraría. Sin embargo, el cargo apareció en la factura final.\n\nSolicito el reembolso completo de $50. También agradecería una explicación y la confirmación de cuándo se procesará el reembolso.\n\nGracias por su ayuda.`, polite: 'Hacer más formal', shorter: 'Hacer más breve', restore: 'Restaurar borrador', approveDraft: 'Aprobar y traducir', translationLabel: 'REVISIÓN DE LA TRADUCCIÓN', translationTitle: 'Revisa el correo traducido', translationHelp: 'Compara el correo traducido con la versión aprobada. Aún no se ha enviado.', approvedVersion: 'Versión aprobada', translatedVersion: 'Traducción al inglés', verify: 'Datos importantes verificados', safe: 'Los datos importantes coinciden con la versión aprobada.', verification: ['Reembolso de $50','Disputa del cargo','Solicitud de explicación','Fecha del reembolso'], backDraft: 'Volver al borrador', approveTranslation: 'Aprobar la traducción', completion: 'Traducción aprobada', completionText: 'El correo está listo para el siguiente paso. Aún no se ha enviado.', copyEmail: 'Copiar correo', openEmail: 'Crear borrador de correo', notSent: 'No se ha enviado nada', editTranslation: 'Editar la traducción', approvalEditNote: 'Si cambias un paso anterior, tendrás que aprobar de nuevo la traducción.', addMissing: 'Añadir la información',
+  },
+}
+
+const translatedEmail = {
+  en: {
+    subject: 'Solicitud de reembolso por cargos incorrectos de estacionamiento',
+    body: `Estimado equipo de facturación:\n\nRevisé la factura final de mi estancia y encontré cargos de estacionamiento que considero que se añadieron por error.\n\nNo utilicé el estacionamiento del hotel durante mi estancia. También informé a la recepción de que no había estacionado ningún vehículo y me dijeron que no se me cobraría. Sin embargo, los cargos aparecieron en la factura final.\n\nSolicito el reembolso completo de $50 y la confirmación del motivo del cargo y de la fecha prevista para el reembolso.\n\nGracias por su ayuda.`,
+  },
+  ja: {
+    subject: 'Request for Refund of Incorrect Parking Charges',
+    body: `Dear Billing Team,\n\nI reviewed the final bill for my stay and found parking charges that I believe were added incorrectly.\n\nI did not use the hotel parking lot during my stay. I informed the front desk that I was not parking a car and was told that I would not be charged. However, the parking charges still appeared on my final bill.\n\nPlease refund the full parking amount of $50. I would also appreciate an explanation of why the charges were added and confirmation of when the refund will be processed.\n\nThank you for your assistance.`,
+  },
+  es: {
+    subject: 'Request for Refund of Incorrect Parking Charges',
+    body: `Dear Billing Team,\n\nI reviewed the final bill and found parking charges that I believe were added incorrectly.\n\nI did not use the hotel parking lot. I informed the front desk and was told that I would not be charged. However, the charge appeared on the final bill.\n\nPlease refund the full $50 and confirm why the charge was added and when the refund will be processed.\n\nThank you for your assistance.`,
   },
 }
 
 function App() {
-  const [language, setLanguage] =
-    useState<Language>('en')
+  const [language, setLanguage] = useState<Lang>('en')
+  const [recipientLanguage, setRecipientLanguage] = useState<Lang>('en')
+  const [step, setStep] = useState<Step>('email')
+  const [view, setView] = useState<View>('intake')
+  const [message, setMessage] = useState('')
+  const [request, setRequest] = useState('')
+  const [files, setFiles] = useState<File[]>([])
+  const [fileError, setFileError] = useState('')
+  const [showStructure, setShowStructure] = useState(false)
+  const [showModal, setShowModal] = useState(false)
+  const [facts, setFacts] = useState<Fact[]>([])
+  const [statements, setStatements] = useState<string[]>([])
+  const [outcome, setOutcome] = useState('')
+  const [unknown, setUnknown] = useState<string[]>([])
+  const [options, setOptions] = useState([true, true, false])
+  const [editingFacts, setEditingFacts] = useState(false)
+  const [draftSubject, setDraftSubject] = useState('')
+  const [draftBody, setDraftBody] = useState('')
+  const [translationApproved, setTranslationApproved] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const t = copy[language]
 
-  const [
-    recipientLanguage,
-    setRecipientLanguage,
-  ] = useState<Language>('en')
+  const hasMessage = message.trim().length > 0
+  const hasFiles = files.length > 0
+  const hasRequest = request.trim().length > 0
+  const canAnalyze = (hasMessage || hasFiles) && hasRequest
 
-  const [activeStep, setActiveStep] =
-    useState<Step>('email')
-
-  const [
-    originalMessage,
-    setOriginalMessage,
-  ] = useState('')
-
-  const [
-    userRequest,
-    setUserRequest,
-  ] = useState('')
-
-  const [
-    selectedFiles,
-    setSelectedFiles,
-  ] = useState<File[]>([])
-
-  const [fileError, setFileError] =
-    useState('')
-
-  const [
-    showExample,
-    setShowExample,
-  ] = useState(false)
-
-  const [showModal, setShowModal] =
-    useState(false)
-
-  const fileInputRef =
-    useRef<HTMLInputElement>(null)
-
-  const text = translations[language]
-
-  const hasOriginalMessage =
-    originalMessage.trim().length > 0
-
-  const hasDocuments =
-    selectedFiles.length > 0
-
-  const hasRequest =
-    userRequest.trim().length > 0
-
-  const hasSource =
-    hasOriginalMessage || hasDocuments
-
-  const canAnalyze =
-    hasSource && hasRequest
-
-  const reviewedCount = [
-    hasOriginalMessage,
-    hasDocuments,
-    hasRequest,
-  ].filter(Boolean).length
-
-  const handleContinue = () => {
-    if (activeStep === 'email') {
-      setActiveStep('documents')
-      return
-    }
-
-    setActiveStep('request')
+  const seedDemo = (lang: Lang = language) => {
+    const n = copy[lang]
+    setFacts(n.factLabels.map((label, i) => ({ label, value: n.factValues[i] })))
+    setStatements([...n.statements])
+    setOutcome(n.outcome)
+    setUnknown([...n.unknown])
+    setDraftSubject(n.draftSubject)
+    setDraftBody(n.draftBody)
   }
 
-  const handleFiles = (
-    event: ChangeEvent<HTMLInputElement>,
-  ) => {
-    const files = Array.from(
-      event.target.files ?? [],
-    )
+  const changeLanguage = (lang: Lang) => {
+    setLanguage(lang)
+    if (view !== 'intake') seedDemo(lang)
+  }
 
-    const combinedFiles = [
-      ...selectedFiles,
-      ...files,
-    ]
-
+  const onFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const added = Array.from(event.target.files ?? [])
+    const next = [...files, ...added]
     setFileError('')
-
-    if (combinedFiles.length > MAX_FILES) {
-      setFileError(
-        language === 'ja'
-          ? `最大${MAX_FILES}ファイルまで追加できます。`
-          : language === 'es'
-            ? `Puedes subir hasta ${MAX_FILES} archivos.`
-            : `You can upload up to ${MAX_FILES} files.`,
-      )
-
-      event.target.value = ''
-      return
-    }
-
-    const acceptedTypes = [
-      'application/pdf',
-      'image/jpeg',
-      'image/png',
-    ]
-
-    const invalidFile =
-      files.some(
-        (file) =>
-          !acceptedTypes.includes(file.type),
-      )
-
-    if (invalidFile) {
-      setFileError(
-        language === 'ja'
-          ? 'PDF、JPG、JPEG、PNGファイルを使用してください。'
-          : language === 'es'
-            ? 'Sube únicamente archivos PDF, JPG, JPEG o PNG.'
-            : 'Please upload PDF, JPG, JPEG, or PNG files only.',
-      )
-
-      event.target.value = ''
-      return
-    }
-
-    const totalSize =
-      combinedFiles.reduce(
-        (total, file) =>
-          total + file.size,
-        0,
-      )
-
-    if (totalSize > MAX_TOTAL_SIZE) {
-      setFileError(
-        language === 'ja'
-          ? 'ファイルの合計サイズは25MBまでです。'
-          : language === 'es'
-            ? 'El tamaño total no puede superar los 25 MB.'
-            : 'The total file size cannot exceed 25 MB.',
-      )
-
-      event.target.value = ''
-      return
-    }
-
-    setSelectedFiles(combinedFiles)
-    event.target.value = ''
+    if (next.length > MAX_FILES) { setFileError(`Maximum ${MAX_FILES} files.`); event.target.value = ''; return }
+    if (added.some(f => !['application/pdf','image/jpeg','image/png'].includes(f.type))) { setFileError('PDF, JPG, JPEG, or PNG only.'); event.target.value = ''; return }
+    if (next.reduce((s,f)=>s+f.size,0) > MAX_TOTAL_SIZE) { setFileError('Maximum total size is 25 MB.'); event.target.value = ''; return }
+    setFiles(next); event.target.value = ''
   }
 
-  return (
-    <div className="app">
-      <header className="header">
-        <div className="header-inner">
-          <div className="brand">
-            <div className="brand-icon">
-              B
-            </div>
+  const go = (next: View) => { setView(next); window.scrollTo(0,0) }
+  const viewOrder: View[] = ['intake','review','draft','translation']
+  const currentViewIndex = viewOrder.indexOf(view)
+  const navigateProgress = (target: View, targetIndex: number) => {
+    if (targetIndex > currentViewIndex) return
+    if (targetIndex < currentViewIndex) setTranslationApproved(false)
+    if (target === 'intake') setStep('request')
+    go(target)
+  }
 
-            <div>
-              <p className="brand-name">
-                BridgeCase
-              </p>
-
-              <p className="brand-tagline">
-                {text.brandTagline}
-              </p>
-            </div>
-          </div>
-
-          <select
-            className="language-select"
-            value={language}
-            onChange={(event) =>
-              setLanguage(
-                event.target
-                  .value as Language,
-              )
-            }
+  const progress = (active: number) => (
+    <nav className="progress-strip" aria-label="Workflow progress">
+      {t.progress.map((label, i) => {
+        const target = viewOrder[i]
+        const isCompleted = i < active
+        const isCurrent = i === active - 1
+        const isAvailable = i <= currentViewIndex
+        return (
+          <button
+            type="button"
+            className={`progress-item ${isCompleted ? 'active' : ''} ${isCurrent ? 'current' : ''} ${isAvailable ? 'clickable' : ''}`}
+            key={label}
+            disabled={!isAvailable}
+            onClick={() => navigateProgress(target, i)}
+            aria-current={isCurrent ? 'step' : undefined}
           >
-            {interfaceLanguageOptions.map(
-              (option) => (
-                <option
-                  key={option.value}
-                  value={option.value}
-                >
-                  {option.label}
-                </option>
-              ),
-            )}
-          </select>
-        </div>
-      </header>
-
-      <main className="main">
-        <section className="hero">
-          <div className="hero-label">
-            <span>✓</span>
-
-            <strong>
-              {text.aiLabelFirst}
-            </strong>
-
-            {language === 'en' && (
-              <i>•</i>
-            )}
-
-            <strong>
-              {text.aiLabelSecond}
-            </strong>
-          </div>
-
-          <h1>
-            <span>
-              {text.heroLineOne}
-            </span>
-
-            <span>
-              {text.heroLineTwo}
-            </span>
-          </h1>
-
-          <div className="hero-description">
-            <p>
-              {text.heroDescriptionOne}
-            </p>
-
-            <p>
-              {text.heroDescriptionTwo}
-            </p>
-
-            <strong>
-              {text.heroApproval}
-            </strong>
-          </div>
-
-          <div className="language-flow">
-            <article className="flow-card">
-              <small>
-                {text.visualInputLabel}
-              </small>
-
-              <p>
-                {text.visualInputText}
-              </p>
-            </article>
-
-            <div className="bridge-center">
-              <div className="bridge-logo">
-                B
-              </div>
-
-              <strong>
-                BridgeCase
-              </strong>
-
-              <div className="bridge-description">
-                <span>
-                  {text.visualBridgeLineOne}
-                </span>
-
-                <span>
-                  {text.visualBridgeLineTwo}
-                </span>
-              </div>
-            </div>
-
-            <article className="flow-card">
-              <small>
-                {text.visualOutputLabel}
-              </small>
-
-              <p>
-                {text.visualOutputText}
-              </p>
-            </article>
-          </div>
-
-          <div className="difference-grid">
-            <article className="difference-card approval-card">
-              <div className="difference-icon">
-                ✓
-              </div>
-
-              <h2>
-                {text.cardOneTitle}
-              </h2>
-
-              <p>
-                {text.cardOneDescription}
-              </p>
-            </article>
-
-            <article className="difference-card control-card">
-              <div className="difference-icon">
-                ●
-              </div>
-
-              <h2>
-                {text.cardTwoTitle}
-              </h2>
-
-              <p>
-                {text.cardTwoDescription}
-              </p>
-            </article>
-
-            <article className="difference-card compare-card">
-              <div className="difference-icon">
-                ⇄
-              </div>
-
-              <span className="translation-direction">
-                {text.cardThreeDirection}
-              </span>
-
-              <h2>
-                {text.cardThreeTitle}
-              </h2>
-
-              <p>
-                {text.cardThreeDescription}
-              </p>
-
-              <div className="translation-comparison">
-                <div className="comparison-row">
-                  <span>
-                    {text.approvedRequest}
-                  </span>
-
-                  <strong>
-                    {text.approvedExample}
-                  </strong>
-                </div>
-
-                <div className="comparison-arrow">
-                  ↓
-                </div>
-
-                <div className="comparison-row">
-                  <span>
-                    {text.translatedMessage}
-                  </span>
-
-                  <strong>
-                    {text.translatedExample}
-                  </strong>
-                </div>
-
-                <div className="comparison-result">
-                  ✓ {text.detailsMatch}
-                </div>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section className="case-card">
-          <div className="case-card-header">
-            <p className="eyebrow">
-              {text.newCase}
-            </p>
-
-            <h2>
-              {text.caseTitle}
-            </h2>
-
-            <p>
-              {text.caseDescription}
-            </p>
-          </div>
-
-          <div className="step-tabs">
-            {(
-              [
-                'email',
-                'documents',
-                'request',
-              ] as Step[]
-            ).map(
-              (step, index) => (
-                <button
-                  type="button"
-                  className={
-                    activeStep === step
-                      ? 'step active'
-                      : 'step'
-                  }
-                  key={step}
-                  onClick={() =>
-                    setActiveStep(step)
-                  }
-                >
-                  <span>
-                    {index + 1}
-                  </span>
-
-                  {
-                    [
-                      text.originalMessage,
-                      text.documents,
-                      text.yourRequest,
-                    ][index]
-                  }
-                </button>
-              ),
-            )}
-          </div>
-
-          <div className="form-area">
-            {activeStep === 'email' && (
-              <>
-                <h3>
-                  {text.emailTitle}
-                </h3>
-
-                <p className="field-help">
-                  {text.emailDescription}
-                </p>
-
-                <div className="shortcut-guide">
-                  <div>
-                    <strong>
-                      {text.windows}
-                    </strong>
-
-                    <span>
-                      Ctrl+C → Ctrl+V
-                    </span>
-                  </div>
-
-                  <div>
-                    <strong>
-                      {text.mac}
-                    </strong>
-
-                    <span>
-                      ⌘C → ⌘V
-                    </span>
-                  </div>
-
-                  <div>
-                    <strong>
-                      {text.mobile}
-                    </strong>
-
-                    <span>
-                      {text.mobileAction}
-                    </span>
-                  </div>
-                </div>
-
-                <textarea
-                  value={originalMessage}
-                  onChange={(event) =>
-                    setOriginalMessage(
-                      event.target.value,
-                    )
-                  }
-                  placeholder={
-                    text.emailPlaceholder
-                  }
-                />
-
-                <div className="notice-card success-card">
-                  <strong>
-                    ✓ {text.controlNoticeTitle}
-                  </strong>
-
-                  <p>
-                    {text.controlNotice}
-                  </p>
-                </div>
-              </>
-            )}
-
-            {activeStep ===
-              'documents' && (
-              <>
-                <h3>
-                  {text.documentTitle}
-                </h3>
-
-                <p className="field-help">
-                  {text.documentDescription}
-                </p>
-
-                <div className="requirements-card">
-                  <h4>
-                    {text.evidenceTitle}
-                  </h4>
-
-                  <p>
-                    {text.evidenceDescription}
-                  </p>
-
-                  <div className="requirements-grid">
-                    {text.checks.map(
-                      (item) => (
-                        <div
-                          className="requirement-item"
-                          key={item}
-                        >
-                          <span>✓</span>
-                          <p>{item}</p>
-                        </div>
-                      ),
-                    )}
-                  </div>
-                </div>
-
-                <input
-                  ref={fileInputRef}
-                  className="hidden-file-input"
-                  type="file"
-                  accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                  multiple
-                  onChange={handleFiles}
-                />
-
-                <button
-                  type="button"
-                  className="upload-box"
-                  onClick={() =>
-                    fileInputRef.current?.click()
-                  }
-                >
-                  <span className="large-upload-icon">
-                    ↑
-                  </span>
-
-                  <strong>
-                    {text.chooseFiles}
-                  </strong>
-
-                  <span>
-                    {text.chooseFilesAction}
-                  </span>
-
-                  <small>
-                    {text.fileLimits}
-                  </small>
-
-                  <small>
-                    {text.fileTypes}
-                  </small>
-                </button>
-
-                <div className="notice-card success-card">
-                  <strong>
-                    ✓ {text.noCompressionTitle}
-                  </strong>
-
-                  <p>
-                    {text.noCompression}
-                  </p>
-                </div>
-
-                {fileError && (
-                  <div className="notice-card error-card">
-                    {fileError}
-                  </div>
-                )}
-
-                {selectedFiles.length >
-                  0 && (
-                  <div className="selected-files">
-                    <div className="selected-files-header">
-                      <strong>
-                        {text.selectedFiles}
-                      </strong>
-
-                      <span>
-                        {
-                          selectedFiles.length
-                        }{' '}
-                        / {MAX_FILES}
-                      </span>
-                    </div>
-
-                    {selectedFiles.map(
-                      (file, index) => (
-                        <div
-                          className="selected-file"
-                          key={`${file.name}-${file.lastModified}`}
-                        >
-                          <span>
-                            <strong>
-                              {file.type ===
-                              'application/pdf'
-                                ? 'PDF'
-                                : 'IMG'}
-                            </strong>{' '}
-                            {file.name}
-                          </span>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSelectedFiles(
-                                (current) =>
-                                  current.filter(
-                                    (
-                                      _,
-                                      currentIndex,
-                                    ) =>
-                                      currentIndex !==
-                                      index,
-                                  ),
-                              )
-                            }
-                          >
-                            {text.remove}
-                          </button>
-                        </div>
-                      ),
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-
-            {activeStep ===
-              'request' && (
-              <>
-                <h3>
-                  {text.requestTitle}
-                </h3>
-
-                <p className="field-help">
-                  {text.requestDescription}
-                </p>
-
-                <div className="natural-input-guide">
-                  <div className="natural-input-heading">
-                    <span className="natural-input-icon">
-                      ✎
-                    </span>
-
-                    <div>
-                      <strong>
-                        {
-                          text.naturalInputTitle
-                        }
-                      </strong>
-
-                      <p>
-                        {
-                          text.naturalInputNote
-                        }
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="natural-input-example">
-                    {
-                      text.naturalInputExample
-                    }
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  className="example-toggle"
-                  onClick={() =>
-                    setShowExample(
-                      (current) =>
-                        !current,
-                    )
-                  }
-                >
-                  {showExample
-                    ? '▴'
-                    : '▾'}{' '}
-                  {showExample
-                    ? text.hideExample
-                    : text.seeExample}
-                </button>
-
-                {showExample && (
-                  <div className="organized-example">
-                    <strong>
-                      {
-                        text.organizedExampleTitle
-                      }
-                    </strong>
-
-                    <div className="organized-example-list">
-                      {text.organizedExamples.map(
-                        (
-                          item,
-                          index,
-                        ) => (
-                          <div
-                            className="organized-example-item"
-                            key={item}
-                          >
-                            <span>
-                              {index + 1}
-                            </span>
-
-                            <p>
-                              {item}
-                            </p>
-                          </div>
-                        ),
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                <textarea
-                  className="request-textarea"
-                  value={userRequest}
-                  onChange={(event) =>
-                    setUserRequest(
-                      event.target.value,
-                    )
-                  }
-                  placeholder={
-                    text.requestPlaceholder
-                  }
-                />
-
-                <div className="recipient-language-card">
-                  <div>
-                    <strong>
-                      {
-                        text.recipientLanguageTitle
-                      }
-                    </strong>
-
-                    <p>
-                      {
-                        text.recipientLanguageDescription
-                      }
-                    </p>
-                  </div>
-
-                  <select
-                    value={
-                      recipientLanguage
-                    }
-                    onChange={(event) =>
-                      setRecipientLanguage(
-                        event.target
-                          .value as Language,
-                      )
-                    }
-                  >
-                    {recipientLanguageOptions[
-                      language
-                    ].map(
-                      (option) => (
-                        <option
-                          key={
-                            option.value
-                          }
-                          value={
-                            option.value
-                          }
-                        >
-                          {option.label}
-                        </option>
-                      ),
-                    )}
-                  </select>
-                </div>
-
-                <div className="notice-card warning-card">
-                  <strong>
-                    ! {text.privacyTitle}
-                  </strong>
-
-                  <p>
-                    {
-                      text.privacyDescription
-                    }
-                  </p>
-                </div>
-              </>
-            )}
-
-            <div className="form-actions">
-              <button type="button">
-                {text.saveLater}
-              </button>
-
-              {activeStep !==
-              'request' ? (
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={
-                    handleContinue
-                  }
-                >
-                  {text.continue} →
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() =>
-                    setShowModal(true)
-                  }
-                >
-                  {text.analyze} →
-                </button>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="how-it-works">
-          <p className="eyebrow">
-            {text.howItWorks}
-          </p>
-
-          <h2>
-            {text.howItWorksTitle}
-          </h2>
-
-          <div className="feature-grid">
-            {text.features.map(
-              (
-                feature,
-                index,
-              ) => (
-                <article
-                  className="feature-card"
-                  key={
-                    feature.title
-                  }
-                >
-                  <span className="feature-icon">
-                    {feature.icon}
-                  </span>
-
-                  <div className="feature-number">
-                    0{index + 1}
-                  </div>
-
-                  <h3>
-                    {feature.title}
-                  </h3>
-
-                  <p>
-                    {
-                      feature.description
-                    }
-                  </p>
-                </article>
-              ),
-            )}
-          </div>
-        </section>
-      </main>
-
-      {showModal && (
-        <div
-          className="modal-overlay"
-          onMouseDown={() =>
-            setShowModal(false)
-          }
-        >
-          <section
-            className="analysis-modal"
-            onMouseDown={(event) =>
-              event.stopPropagation()
-            }
-          >
-            <button
-              className="modal-close-button"
-              type="button"
-              onClick={() =>
-                setShowModal(false)
-              }
-            >
-              ×
-            </button>
-
-            <div className="modal-heading">
-              <span>AI</span>
-
-              <div>
-                <p>
-                  {text.modalEyebrow}
-                </p>
-
-                <h2>
-                  {canAnalyze
-                    ? text.modalReadyTitle
-                    : text.modalMissingTitle}
-                </h2>
-
-                <small>
-                  {reviewedCount}{' '}
-                  {
-                    text.modalItemsReviewed
-                  }
-                </small>
-              </div>
-            </div>
-
-            <div className="analysis-status-list">
-              <div
-                className={
-                  hasOriginalMessage
-                    ? 'status-item complete'
-                    : hasDocuments
-                      ? 'status-item optional'
-                      : 'status-item missing'
-                }
-              >
-                <strong>
-                  {hasOriginalMessage
-                    ? '✓'
-                    : hasDocuments
-                      ? 'i'
-                      : '!'}{' '}
-                  {
-                    text.modalOriginalMessage
-                  }
-                </strong>
-
-                <p>
-                  {hasOriginalMessage
-                    ? text.modalOriginalAdded
-                    : hasDocuments
-                      ? text.modalOriginalFromDocuments
-                      : text.modalOriginalMissing}
-                </p>
-              </div>
-
-              <div
-                className={
-                  hasDocuments
-                    ? 'status-item complete'
-                    : 'status-item optional'
-                }
-              >
-                <strong>
-                  {hasDocuments
-                    ? '✓'
-                    : 'i'}{' '}
-                  {
-                    text.modalDocuments
-                  }
-                </strong>
-
-                <p>
-                  {hasDocuments
-                    ? `${selectedFiles.length} ${text.modalDocumentsSelected}`
-                    : text.modalDocumentsOptional}
-                </p>
-              </div>
-
-              <div
-                className={
-                  hasRequest
-                    ? 'status-item complete'
-                    : 'status-item missing'
-                }
-              >
-                <strong>
-                  {hasRequest
-                    ? '✓'
-                    : '!'}{' '}
-                  {text.modalRequest}
-                </strong>
-
-                <p>
-                  {hasRequest
-                    ? text.modalRequestAdded
-                    : text.modalRequestMissing}
-                </p>
-              </div>
-            </div>
-
-            <div className="analysis-preview">
-              <h3>
-                {text.modalNextTitle}
-              </h3>
-
-              <p>
-                {
-                  text.modalNextDescription
-                }
-              </p>
-
-              <ul>
-                {text.reviewItems.map(
-                  (item) => (
-                    <li key={item}>
-                      {item}
-                    </li>
-                  ),
-                )}
-              </ul>
-            </div>
-
-            <div className="modal-actions">
-              <button
-                type="button"
-                onClick={() =>
-                  setShowModal(false)
-                }
-              >
-                {canAnalyze
-                  ? text.modalReview
-                  : text.modalAddMissing}
-              </button>
-
-              {canAnalyze && (
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() =>
-                    alert(
-                      'Next: case review screen',
-                    )
-                  }
-                >
-                  {text.modalOrganize} →
-                </button>
-              )}
-            </div>
-          </section>
-        </div>
-      )}
-    </div>
+            <span>{i + 1}</span>
+            <strong>{label}</strong>
+          </button>
+        )
+      })}
+    </nav>
   )
+  const header = (
+    <header className="header"><div className="header-inner">
+      <button className="brand brand-button" onClick={()=>go('intake')}><div className="brand-icon">B</div><div><p className="brand-name">BridgeCase</p><p className="brand-tagline">{t.tagline}</p></div></button>
+      <select className="language-select" value={language} onChange={e=>changeLanguage(e.target.value as Lang)}>{uiOptions.map(o=><option value={o.value} key={o.value}>{o.label}</option>)}</select>
+    </div></header>
+  )
+
+  const intake = (
+    <main className="main">
+      <section className="hero">
+        <div className="hero-label"><span>✓</span><strong>AI</strong><i>•</i><strong>{language==='ja'?'翻訳前に確認・修正':language==='es'?'Revisa antes de traducir':'Review before translation'}</strong></div>
+        <h1><span>{t.heroA}</span><span>{t.heroB}</span></h1><p className="hero-copy">{t.heroText}<strong>{t.approval}</strong></p>
+        <div className="language-flow"><article className="flow-card"><small>{t.flowIn}</small><p>{t.flowInText}</p></article><div className="bridge-center"><div className="bridge-logo">B</div><b>BridgeCase</b><p>{t.bridgeA}<br/>{t.bridgeB}</p></div><article className="flow-card"><small>{t.flowOut}</small><p>{t.flowOutText}</p></article></div>
+        <div className="difference-grid">{t.safety.map((x,i)=><article className={`difference-card c${i}`} key={x[1]}><span className="difference-icon">{x[0]}</span>{i===2&&<em>{t.direction}</em>}<h2>{x[1]}</h2><p>{x[2]}</p>{i===2&&<div className="comparison"><label>{t.approved}</label><b>{t.approvedText}</b><span>↓</span><label>{t.translated}</label><b>{t.translatedText}</b><mark>✓ {t.match}</mark></div>}</article>)}</div>
+      </section>
+      <section className="case-card"><div className="case-head"><p>{t.newCase}</p><h2>{t.caseTitle}</h2><span>{t.caseHelp}</span></div>
+        <div className="step-tabs">{(['email','documents','request'] as Step[]).map((s,i)=><button className={step===s?'active':''} onClick={()=>setStep(s)} key={s}><span>{i+1}</span>{t.tabs[i]}</button>)}</div>
+        <div className="form-area">
+          {step==='email'&&<><h3>{t.emailTitle}</h3><p className="help">{t.emailHelp}</p><textarea value={message} onChange={e=>setMessage(e.target.value)} placeholder={t.emailPlaceholder}/><div className="notice success"><b>✓ {t.controlTitle}</b><p>{t.controlText}</p></div></>}
+          {step==='documents'&&<><h3>{t.docsTitle}</h3><p className="help">{t.docsHelp}</p><div className="requirements">{t.checks.map(x=><span key={x}>✓ {x}</span>)}</div><input className="hidden" ref={inputRef} type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={onFiles}/><button className="upload" onClick={()=>inputRef.current?.click()}><strong>↑</strong><b>{t.choose}</b><span>{t.select}</span><small>{t.limits}</small></button><div className="notice success"><b>✓ {t.noCompress}</b><p>{t.noCompressText}</p></div>{fileError&&<div className="notice error">{fileError}</div>}{files.length>0&&<div className="files"><header><b>{t.selected}</b><span>{files.length}/{MAX_FILES}</span></header>{files.map((f,i)=><div className="file" key={`${f.name}-${f.lastModified}`}><span><b>{f.type==='application/pdf'?'PDF':'IMG'}</b> {f.name}</span><button onClick={()=>setFiles(v=>v.filter((_,n)=>n!==i))}>{t.remove}</button></div>)}</div>}</>}
+          {step==='request'&&<><h3>{t.requestTitle}</h3><p className="help">{t.requestHelp}</p><div className="natural"><b>{t.naturalTitle}</b><p>{t.naturalNote}</p><blockquote>{t.naturalExample}</blockquote></div><button className="text-button" onClick={()=>setShowStructure(v=>!v)}>{showStructure?'▴':'▾'} {showStructure?t.hideStructure:t.showStructure}</button>{showStructure&&<div className="structure">{t.structure.map((x,i)=><div key={x}><span>{i+1}</span><b>{x}</b></div>)}</div>}<textarea className="request-area" value={request} onChange={e=>setRequest(e.target.value)} placeholder={t.placeholder}/><div className="recipient"><div><b>{t.companyLang}</b><p>{t.companyLangHelp}</p></div><select value={recipientLanguage} onChange={e=>setRecipientLanguage(e.target.value as Lang)}>{recipientOptions[language].map(o=><option value={o.value} key={o.value}>{o.label}</option>)}</select></div><div className="notice warning notice-with-icon"><span className="notice-icon">!</span><div><b>{t.privacy}</b><p>{t.privacyText}</p></div></div></>}
+          <div className="actions"><button>{t.save}</button>{step!=='request'?<button className="primary" onClick={()=>setStep(step==='email'?'documents':'request')}>{t.next} →</button>:<button className="primary" onClick={()=>setShowModal(true)}>{t.analyze} →</button>}</div>
+        </div>
+      </section>
+    </main>
+  )
+
+  const review = (
+    <main className="workflow-main">{progress(2)}<section className="workflow-heading"><p>{t.demo}</p><h1>{t.reviewTitle}</h1><span>{t.reviewHelp}</span></section><div className="demo"><b>i</b><div><strong>{t.demoTitle}</strong><p>{t.demoText}</p></div></div>
+      <section className="review-card"><header><h2>{t.sections[0]}</h2><button className="text-button" onClick={()=>setEditingFacts(v=>!v)}>{editingFacts?t.done:t.edit}</button></header><div className="facts">{facts.map((f,i)=><label key={`${f.label}-${i}`}><span>{f.label}</span>{editingFacts?<input value={f.value} onChange={e=>setFacts(v=>v.map((x,n)=>n===i?{...x,value:e.target.value}:x))}/>:<b>{f.value}</b>}</label>)}</div></section>
+      <section className="review-card"><h2>{t.sections[1]}</h2><div className="editable">{statements.map((x,i)=><div key={i}><span>{i+1}</span><textarea value={x} onChange={e=>setStatements(v=>v.map((y,n)=>n===i?e.target.value:y))}/></div>)}</div></section>
+      <section className="review-card"><h2>{t.sections[2]}</h2><textarea value={outcome} onChange={e=>setOutcome(e.target.value)}/></section>
+      <section className="review-card unknown"><h2>{t.sections[3]}</h2><div className="editable">{unknown.map((x,i)=><div key={i}><span>?</span><textarea value={x} onChange={e=>setUnknown(v=>v.map((y,n)=>n===i?e.target.value:y))}/></div>)}</div></section>
+      <section className="review-card"><h2>{t.sections[4]}</h2><div className="check-list">{t.options.map((x,i)=><label key={x}><input type="checkbox" checked={options[i]} onChange={e=>setOptions(v=>v.map((y,n)=>n===i?e.target.checked:y))}/><span>{x}</span></label>)}</div></section>
+      <div className="workflow-actions"><button onClick={()=>go('intake')}>← {t.back}</button><button className="primary" onClick={()=>{setDraftSubject(t.draftSubject);setDraftBody(t.draftBody);go('draft')}}>{t.createDraft} →</button></div>
+    </main>
+  )
+
+  const draft = (
+    <main className="workflow-main">{progress(3)}<section className="workflow-heading"><p>{t.draftLabel}</p><h1>{t.draftTitle}</h1><span>{t.draftHelp}</span></section><section className="draft-card"><label><span>{t.subject}</span><input value={draftSubject} onChange={e=>setDraftSubject(e.target.value)}/></label><label><span>{t.message}</span><textarea className="draft-area" value={draftBody} onChange={e=>setDraftBody(e.target.value)}/></label><div className="draft-tools"><button onClick={()=>setDraftBody(t.draftBody.replace('よろしくお願いいたします。','何卒よろしくお願いいたします。'))}>✦ {t.polite}</button><button onClick={()=>setDraftBody(t.draftBody.split('\n').filter((x,i)=>i<7).join('\n'))}>↘ {t.shorter}</button><button onClick={()=>{setDraftSubject(t.draftSubject);setDraftBody(t.draftBody)}}>↺ {t.restore}</button></div><div className="notice success"><b>✓ {t.notSent}</b><p>{t.draftHelp}</p></div></section><div className="workflow-actions"><button onClick={()=>go('review')}>← {t.back}</button><button className="primary" onClick={()=>{setTranslationApproved(false);go('translation')}}>{t.approveDraft} →</button></div></main>
+  )
+
+  const translation = (
+    <main className="workflow-main">{progress(4)}<section className="workflow-heading"><p>{t.translationLabel}</p><h1>{translationApproved?t.completion:t.translationTitle}</h1><span>{translationApproved?t.completionText:t.translationHelp}</span></section>{!translationApproved?<><section className="translation-grid"><article><header><span>Aa</span><b>{t.approvedVersion}</b></header><h2>{draftSubject}</h2><pre>{draftBody}</pre></article><article><header><span>⇄</span><b>{t.translatedVersion}</b></header><h2>{translatedEmail[language].subject}</h2><pre>{translatedEmail[language].body}</pre></article></section><section className="verify"><h2>✓ {t.verify}</h2><p>{t.safe}</p><div>{t.verification.map(x=><span key={x}>✓ {x}</span>)}</div></section><div className="workflow-actions"><button onClick={()=>go('draft')}>← {t.backDraft}</button><button className="primary" onClick={()=>{setTranslationApproved(true);window.scrollTo(0,0)}}>{t.approveTranslation} →</button></div></>:<section className="complete"><div className="complete-heading"><div className="complete-check">✓</div><div><h2>{t.completion}</h2><p>{t.completionText}</p></div></div><div className="notice success notice-with-icon"><span className="notice-icon success-icon">✓</span><div><b>{t.notSent}</b><p>{t.safe}</p></div></div><p className="approval-edit-note">{t.approvalEditNote}</p><footer><button onClick={()=>{setTranslationApproved(false);window.scrollTo(0,0)}}>← {t.editTranslation}</button><button onClick={()=>navigator.clipboard?.writeText(`${translatedEmail[language].subject}\n\n${translatedEmail[language].body}`)}>{t.copyEmail}</button><button className="primary" onClick={()=>window.location.href=`mailto:?subject=${encodeURIComponent(translatedEmail[language].subject)}&body=${encodeURIComponent(translatedEmail[language].body)}`}>{t.openEmail} →</button></footer></section>}</main>
+  )
+
+  return <div className="app">{header}{view==='intake'&&intake}{view==='review'&&review}{view==='draft'&&draft}{view==='translation'&&translation}
+    {showModal&&<div className="modal-bg" onMouseDown={()=>setShowModal(false)}><section className="modal" onMouseDown={e=>e.stopPropagation()}><button className="close" onClick={()=>setShowModal(false)}>×</button><header><span>AI</span><div><p>{t.modalLabel}</p><h2>{canAnalyze?t.ready:t.missing}</h2></div></header><div className="status"><div className={hasMessage?'ok':hasFiles?'info':'bad'}><span className="status-icon">{hasMessage?'✓':hasFiles?'i':'!'}</span><div><b>{t.tabs[0]}</b><p>{hasMessage?t.added:hasFiles?t.sourceFromDocs:t.sourceMissing}</p></div></div><div className={hasFiles?'ok':'info'}><span className="status-icon">{hasFiles?'✓':'i'}</span><div><b>{t.tabs[1]}</b><p>{hasFiles?`${files.length} ${t.added}`:t.optionalDocs}</p></div></div><div className={hasRequest?'ok':'bad'}><span className="status-icon">{hasRequest?'✓':'!'}</span><div><b>{t.tabs[2]}</b><p>{hasRequest?t.added:t.requestMissing}</p></div></div></div><footer><button onClick={()=>setShowModal(false)}>{canAnalyze?t.reviewInputs:t.addMissing}</button>{canAnalyze&&<button className="primary" onClick={()=>{seedDemo();setShowModal(false);go('review')}}>{t.organize} →</button>}</footer></section></div>}
+  </div>
 }
 
 export default App
