@@ -639,3 +639,5 @@
   background: #315de7;
   color: #ffffff;
 }
+
+.analysis-api-error{margin-top:14px;padding:12px 14px;border:1px solid #efb8b8;border-radius:10px;color:#8f2f2f;background:#fff4f4;font-size:14px;line-height:1.5;text-align:left}button:disabled{cursor:wait;opacity:.66}
