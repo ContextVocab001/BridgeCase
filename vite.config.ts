@@ -2,6 +2,8 @@ import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
+const NEBIUS_API_BASE_URL = 'https://api.tokenfactory.nebius.com/v1'
+
 const readJsonBody = async (request: IncomingMessage) => {
   const chunks: Buffer[] = []
 
@@ -12,7 +14,11 @@ const readJsonBody = async (request: IncomingMessage) => {
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
 }
 
-const sendJson = (response: ServerResponse, status: number, payload: unknown) => {
+const sendJson = (
+  response: ServerResponse,
+  status: number,
+  payload: unknown,
+) => {
   response.statusCode = status
   response.setHeader('Content-Type', 'application/json; charset=utf-8')
   response.end(JSON.stringify(payload))
@@ -28,7 +34,7 @@ const pickLanguageCopy = (language: string, requestText: string) => {
       statements: [
         requestText || '利用者が入力した説明をここへ整理します。',
       ],
-      outcome: '利用者が希望する対応を明確にし、企業へ伝える。',
+      outcome: '利用者が希望する対応を明確にし、相手先へ伝える。',
       unknown: [
         '資料本文の読み取りはOCR接続後に有効になります。',
         '請求額や日付は現在のモック処理では確定しません。',
@@ -49,11 +55,19 @@ ${requestText || '入力した問題の内容を、AIが丁寧な文章へ整理
   if (language === 'es') {
     return {
       facts: [
-        { label: 'Fuentes recibidas', value: 'Mensaje original y explicación del usuario' },
-        { label: 'Documentos', value: 'Nombres y metadatos recibidos' },
+        {
+          label: 'Fuentes recibidas',
+          value: 'Mensaje original y explicación del usuario',
+        },
+        {
+          label: 'Documentos',
+          value: 'Nombres y metadatos recibidos',
+        },
       ],
-      statements: [requestText || 'La explicación del usuario aparecerá aquí.'],
-      outcome: 'Comunicar claramente a la empresa la solución solicitada.',
+      statements: [
+        requestText || 'La explicación del usuario aparecerá aquí.',
+      ],
+      outcome: 'Comunicar claramente al destinatario la solución solicitada.',
       unknown: [
         'La lectura del contenido de los documentos se activará al conectar OCR.',
         'Los importes y las fechas no se confirman en el modo de prueba.',
@@ -73,11 +87,19 @@ Gracias por su ayuda.`,
 
   return {
     facts: [
-      { label: 'Sources received', value: 'Original message and user explanation' },
-      { label: 'Documents', value: 'File names and metadata received' },
+      {
+        label: 'Sources received',
+        value: 'Original message and user explanation',
+      },
+      {
+        label: 'Documents',
+        value: 'File names and metadata received',
+      },
     ],
-    statements: [requestText || 'The user explanation will be organized here.'],
-    outcome: 'Clearly communicate the requested resolution to the company.',
+    statements: [
+      requestText || 'The user explanation will be organized here.',
+    ],
+    outcome: 'Clearly communicate the requested resolution to the recipient.',
     unknown: [
       'Document contents will be available after OCR is connected.',
       'Amounts and dates are not confirmed in mock mode.',
@@ -114,35 +136,128 @@ const mockAnalyzeCase = (body: any) => {
   }
 }
 
-const teltruvaApiPlugin = (env: Record<string, string>): Plugin => ({
-  name: 'teltruva-local-api',
-  configureServer(server) {
-    server.middlewares.use('/api/analyze-case', async (request, response) => {
-      if (request.method !== 'POST') {
-        sendJson(response, 405, { error: 'Method not allowed.' })
-        return
-      }
+const getNebiusStatus = async (apiKey: string) => {
+  if (!apiKey) {
+    return {
+      status: 503,
+      payload: {
+        configured: false,
+        connected: false,
+        message: 'NEBIUS_API_KEY is not available to the Vite server.',
+      },
+    }
+  }
 
-      try {
-        const body = await readJsonBody(request)
-
-        if (!body.userRequest?.trim()) {
-          sendJson(response, 400, { error: 'A requested outcome is required.' })
-          return
-        }
-
-        // Today this endpoint returns a safe mock response.
-        // After NEBIUS_API_KEY is available, replace mockAnalyzeCase with
-        // an OpenAI-compatible call to Nebius Token Factory.
-        const result = mockAnalyzeCase(body)
-        sendJson(response, 200, result)
-      } catch (error) {
-        console.error('Teltruva analysis error:', error)
-        sendJson(response, 500, { error: 'The case could not be organized.' })
-      }
+  try {
+    const nebiusResponse = await fetch(`${NEBIUS_API_BASE_URL}/models`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
     })
-  },
-})
+
+    if (!nebiusResponse.ok) {
+      return {
+        status: 502,
+        payload: {
+          configured: true,
+          connected: false,
+          upstreamStatus: nebiusResponse.status,
+          message: 'Nebius received the request but did not accept it.',
+        },
+      }
+    }
+
+    const data = (await nebiusResponse.json()) as {
+      data?: Array<{ id?: string }>
+    }
+
+    const modelIds = Array.isArray(data.data)
+      ? data.data
+          .map((model) => model.id)
+          .filter((id): id is string => Boolean(id))
+      : []
+
+    const nvidiaModels = modelIds
+      .filter((id) => id.toLowerCase().includes('nvidia'))
+      .slice(0, 20)
+
+    return {
+      status: 200,
+      payload: {
+        configured: true,
+        connected: true,
+        modelCount: modelIds.length,
+        nvidiaModels,
+      },
+    }
+  } catch (error) {
+    console.error('Nebius connection error:', error)
+
+    return {
+      status: 502,
+      payload: {
+        configured: true,
+        connected: false,
+        message: 'The Vite server could not reach Nebius Token Factory.',
+      },
+    }
+  }
+}
+
+const teltruvaApiPlugin = (env: Record<string, string>): Plugin => {
+  const apiKey = env.NEBIUS_API_KEY || process.env.NEBIUS_API_KEY || ''
+
+  return {
+    name: 'teltruva-local-api',
+
+    configureServer(server) {
+      server.middlewares.use(
+        '/api/nebius-status',
+        async (request, response) => {
+          if (request.method !== 'GET') {
+            sendJson(response, 405, { error: 'Method not allowed.' })
+            return
+          }
+
+          const result = await getNebiusStatus(apiKey)
+          sendJson(response, result.status, result.payload)
+        },
+      )
+
+      server.middlewares.use(
+        '/api/analyze-case',
+        async (request, response) => {
+          if (request.method !== 'POST') {
+            sendJson(response, 405, { error: 'Method not allowed.' })
+            return
+          }
+
+          try {
+            const body = await readJsonBody(request)
+
+            if (!body.userRequest?.trim()) {
+              sendJson(response, 400, {
+                error: 'A requested outcome is required.',
+              })
+              return
+            }
+
+            // This endpoint still returns a safe mock response.
+            // After the Nebius connection test succeeds, this call will be
+            // replaced with an OpenAI-compatible Nemotron request.
+            const result = mockAnalyzeCase(body)
+            sendJson(response, 200, result)
+          } catch (error) {
+            console.error('Teltruva analysis error:', error)
+            sendJson(response, 500, {
+              error: 'The case could not be organized.',
+            })
+          }
+        },
+      )
+    },
+  }
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
