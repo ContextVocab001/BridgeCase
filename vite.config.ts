@@ -3,6 +3,7 @@ import { defineConfig, loadEnv, type Plugin } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 const NEBIUS_API_BASE_URL = 'https://api.tokenfactory.nebius.com/v1'
+const NEBIUS_TEST_MODEL = 'nvidia/Nemotron-3_5-Lightning'
 
 const readJsonBody = async (request: IncomingMessage) => {
   const chunks: Buffer[] = []
@@ -204,6 +205,124 @@ const getNebiusStatus = async (apiKey: string) => {
   }
 }
 
+const runNebiusInferenceTest = async (apiKey: string) => {
+  if (!apiKey) {
+    return {
+      status: 503,
+      payload: {
+        success: false,
+        configured: false,
+        message: 'NEBIUS_API_KEY is not available to the Vite server.',
+      },
+    }
+  }
+
+  try {
+    const nebiusResponse = await fetch(
+      `${NEBIUS_API_BASE_URL}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: NEBIUS_TEST_MODEL,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Follow the user instruction exactly. Return only the requested text.',
+            },
+            {
+              role: 'user',
+              content: 'Reply with exactly: Teltruva connection successful',
+            },
+          ],
+          temperature: 0,
+          max_tokens: 30,
+          stream: false,
+        }),
+      },
+    )
+
+    const responseText = await nebiusResponse.text()
+
+    if (!nebiusResponse.ok) {
+      console.error(
+        'Nebius inference test failed:',
+        nebiusResponse.status,
+        responseText,
+      )
+
+      return {
+        status: 502,
+        payload: {
+          success: false,
+          configured: true,
+          connected: true,
+          upstreamStatus: nebiusResponse.status,
+          model: NEBIUS_TEST_MODEL,
+          message: 'Nebius received the inference request but did not accept it.',
+        },
+      }
+    }
+
+    const data = JSON.parse(responseText) as {
+      choices?: Array<{
+        message?: {
+          content?: string
+        }
+      }>
+      usage?: {
+        prompt_tokens?: number
+        completion_tokens?: number
+        total_tokens?: number
+      }
+    }
+
+    const modelResponse = data.choices?.[0]?.message?.content?.trim() || ''
+
+    if (!modelResponse) {
+      return {
+        status: 502,
+        payload: {
+          success: false,
+          configured: true,
+          connected: true,
+          model: NEBIUS_TEST_MODEL,
+          message: 'Nebius returned a response without assistant text.',
+        },
+      }
+    }
+
+    return {
+      status: 200,
+      payload: {
+        success: true,
+        configured: true,
+        connected: true,
+        model: NEBIUS_TEST_MODEL,
+        response: modelResponse,
+        usage: data.usage || null,
+      },
+    }
+  } catch (error) {
+    console.error('Nebius inference test error:', error)
+
+    return {
+      status: 502,
+      payload: {
+        success: false,
+        configured: true,
+        connected: false,
+        model: NEBIUS_TEST_MODEL,
+        message: 'The Vite server could not complete the Nemotron test.',
+      },
+    }
+  }
+}
+
 const teltruvaApiPlugin = (env: Record<string, string>): Plugin => {
   const apiKey = env.NEBIUS_API_KEY || process.env.NEBIUS_API_KEY || ''
 
@@ -220,6 +339,19 @@ const teltruvaApiPlugin = (env: Record<string, string>): Plugin => {
           }
 
           const result = await getNebiusStatus(apiKey)
+          sendJson(response, result.status, result.payload)
+        },
+      )
+
+      server.middlewares.use(
+        '/api/nebius-test',
+        async (request, response) => {
+          if (request.method !== 'GET') {
+            sendJson(response, 405, { error: 'Method not allowed.' })
+            return
+          }
+
+          const result = await runNebiusInferenceTest(apiKey)
           sendJson(response, result.status, result.payload)
         },
       )
@@ -242,9 +374,8 @@ const teltruvaApiPlugin = (env: Record<string, string>): Plugin => {
               return
             }
 
-            // This endpoint still returns a safe mock response.
-            // After the Nebius connection test succeeds, this call will be
-            // replaced with an OpenAI-compatible Nemotron request.
+            // Keep case analysis in safe mock mode until the minimal
+            // Nemotron inference test succeeds.
             const result = mockAnalyzeCase(body)
             sendJson(response, 200, result)
           } catch (error) {
