@@ -533,7 +533,14 @@ Write the subject and body in ${interfaceLanguage}.
 
 The user is the sender. Write the complete email in first-person singular.
 Never call the sender "the user", "the customer", "the guest", "利用者", "ユーザー", "el usuario", or any other third-person label.
-Japanese: use natural first-person expressions such as "私は〜しました", "〜と説明を受けました", and "〜を希望します". Do not use "〜としています" or "〜とのことです".
+Never invent or infer a hotel name, company name, brand, property name, department name, employee name, recipient name, or sender name.
+Even if the business type is obvious, do not create a proper noun.
+The greeting is fixed and must be exactly:
+- Japanese: ご担当者様
+- English: Dear Support Team,
+- Spanish: Estimado equipo de atención:
+Do not replace the fixed greeting with a guessed organization or department.
+Japanese: write natural business Japanese from the sender's perspective. Prefer short, direct forms such as "私は10月3日から6日まで、3泊しました。", "私は駐車場を利用していません。", "フロントから、駐車料金は請求されないとの説明を受けました。", and "115ドルの返金を希望します。" Do not use awkward honorific self-reference such as "ご利用いたしました". Do not use "〜としています", "〜とのことです", or third-person report style.
 English: use "I", "me", and "my". Do not use "the user says" or "the guest states".
 Spanish: use first-person wording such as "No utilicé...", "Informé...", and "Solicito...". Do not use "el usuario dice" or "la persona usuaria".
 
@@ -649,8 +656,9 @@ SOURCE SEPARATION RULES:
 10. If files are listed but their contents are unavailable, say document contents are not yet confirmed. Do not claim to have read them.
 
 DRAFT RULES:
-1. Write a complete, concise, professional email in ${interfaceLanguage} from the user's own point of view.
-2. The user is the sender. Use first-person singular throughout the email.
+1. Return a minimal placeholder draft object because a dedicated second step will generate the final user-facing email. Use an empty subject and empty body if needed.
+2. If you do provide draft text, write a complete, concise, professional email in ${interfaceLanguage} from the user's own point of view.
+3. The user is the sender. Use first-person singular throughout the email.
 3. Never describe the sender as "the user", "the customer", "the guest", "利用者", "ユーザー", "el usuario", or any other third-person label.
 4. Japanese: use natural first-person wording such as "私は〜しました", "〜と説明を受けました", and "〜を希望します". Do not use "〜としています", "〜とのことです", or third-person case-summary language.
 5. English: use "I", "me", and "my". Do not write "the user says" or "the guest states".
@@ -730,18 +738,14 @@ ${documentMetadata}`
   const content = data.choices?.[0]?.message?.content?.trim() || ''
   const parsed = extractJsonObject(content) as any
 
-  if (
-    !parsed.draft ||
-    typeof parsed.draft.subject !== 'string' ||
-    typeof parsed.draft.body !== 'string'
-  ) {
-    parsed.draft = await generateFirstPersonReviewDraft(
-      apiKey,
-      interfaceLanguage,
-      originalMessage,
-      userRequest,
-    )
-  }
+  // Always create the user-facing email with a separate, stricter prompt.
+  // Case analysis remains neutral; the email must be written by the sender.
+  parsed.draft = await generateFirstPersonReviewDraft(
+    apiKey,
+    interfaceLanguage,
+    originalMessage,
+    userRequest,
+  )
 
   const analysis = validateCaseAnalysis(parsed)
 
@@ -756,123 +760,6 @@ ${documentMetadata}`
   }
 }
 
-
-const rewriteDraftWithNebius = async (apiKey: string, body: any) => {
-  if (!apiKey) {
-    throw new Error('NEBIUS_API_KEY is not configured.')
-  }
-
-  const action = body.action === 'shorter' ? 'shorter' : 'polite'
-  const language = getLanguageName(body.language)
-  const subject = String(body.subject || '').trim()
-  const message = String(body.body || '').trim()
-
-  if (!subject || !message) {
-    throw new Error('A subject and message are required.')
-  }
-
-  const actionRules =
-    action === 'polite'
-      ? `Rewrite the subject and message in a more polite, cooperative, and professional tone.
-Keep the request direct and clear. Add an appropriate greeting and closing if useful.
-Do not merely delete the closing sentence.`
-      : `Rewrite the complete subject and message to be meaningfully shorter and more concise.
-Remove repetition and unnecessary background, combine related sentences, and reduce the overall word count.
-Keep every material fact, amount, date, reference number, and requested action.
-Do not shorten the message merely by deleting the final sentence or closing.`
-
-  const systemPrompt = `You edit a user-approved consumer communication draft for Teltruva.
-Return exactly one valid JSON object and no other text.
-The output language must remain ${language}.
-
-NON-NEGOTIABLE RULES:
-1. Preserve every amount, currency, date, name, booking number, account number, and case number exactly.
-2. Preserve all material events and every requested outcome.
-3. Do not invent facts, evidence, admissions, compensation, deadlines, threats, or legal claims.
-4. Do not strengthen allegations. Keep user claims framed as the user's account.
-5. Do not translate the draft.
-6. The new subject and body must remain suitable for the same recipient and purpose.
-
-EDITING TASK:
-${actionRules}
-
-Required JSON schema:
-{
-  "subject": "string",
-  "body": "string"
-}`
-
-  const userPrompt = `Edit this draft.
-
-CURRENT SUBJECT:
-${subject}
-
-CURRENT MESSAGE:
-${message}`
-
-  const nebiusResponse = await fetch(
-    `${NEBIUS_API_BASE_URL}/chat/completions`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: NEBIUS_TEST_MODEL,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.15,
-        top_p: 0.95,
-        max_tokens: 1500,
-        stream: false,
-        extra_body: {
-          chat_template_kwargs: { enable_thinking: false },
-        },
-      }),
-    },
-  )
-
-  const responseText = await nebiusResponse.text()
-
-  if (!nebiusResponse.ok) {
-    console.error(
-      'Nebius draft rewrite failed:',
-      nebiusResponse.status,
-      responseText,
-    )
-    throw new Error(`Nebius rejected the rewrite request (${nebiusResponse.status}).`)
-  }
-
-  const data = JSON.parse(responseText) as {
-    choices?: Array<{ message?: { content?: string } }>
-    usage?: Record<string, unknown>
-  }
-
-  const content = data.choices?.[0]?.message?.content?.trim() || ''
-  const parsed = extractJsonObject(content) as {
-    subject?: unknown
-    body?: unknown
-  }
-
-  if (typeof parsed.subject !== 'string' || typeof parsed.body !== 'string') {
-    throw new Error('The model did not return a valid rewritten draft.')
-  }
-
-  return {
-    subject: parsed.subject.trim(),
-    body: parsed.body.trim(),
-    meta: {
-      mode: 'nebius',
-      action,
-      model: NEBIUS_TEST_MODEL,
-      usage: data.usage || null,
-    },
-  }
-}
 
 const teltruvaApiPlugin = (env: Record<string, string>): Plugin => {
   const apiKey = env.NEBIUS_API_KEY || process.env.NEBIUS_API_KEY || ''
@@ -921,30 +808,6 @@ const teltruvaApiPlugin = (env: Record<string, string>): Plugin => {
         },
       )
 
-
-      server.middlewares.use(
-        '/api/rewrite-draft',
-        async (request, response) => {
-          if (request.method !== 'POST') {
-            sendJson(response, 405, { error: 'Method not allowed.' })
-            return
-          }
-
-          try {
-            const body = await readJsonBody(request)
-            const result = await rewriteDraftWithNebius(apiKey, body)
-            sendJson(response, 200, result)
-          } catch (error) {
-            console.error('Teltruva draft rewrite error:', error)
-            sendJson(response, 502, {
-              error:
-                error instanceof Error
-                  ? error.message
-                  : 'The draft could not be rewritten.',
-            })
-          }
-        },
-      )
 
       server.middlewares.use(
         '/api/analyze-case',
