@@ -641,3 +641,21 @@
 }
 
 .analysis-api-error{margin-top:14px;padding:12px 14px;border:1px solid #efb8b8;border-radius:10px;color:#8f2f2f;background:#fff4f4;font-size:14px;line-height:1.5;text-align:left}button:disabled{cursor:wait;opacity:.66}
+
+/* Live Nemotron draft editing */
+.draft-tools button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.draft-action-error {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid #efb8b8;
+  border-radius: 10px;
+  background: #fff4f4;
+  color: #8f2f2f;
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: left;
+}
