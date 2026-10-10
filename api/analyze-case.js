@@ -414,6 +414,7 @@ Future recipient language: ${recipientLanguage}`
         temperature: 0.1,
         max_tokens: 3000,
         response_format: { type: 'json_object' },
+        chat_template_kwargs: { enable_thinking: false },
         stream: false,
       }),
     })
