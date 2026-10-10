@@ -119,50 +119,180 @@ function extractJson(content) {
   throw new Error('The AI response was not valid JSON.')
 }
 
-function stringArray(value) {
-  return Array.isArray(value)
-    ? value
-        .filter((item) => typeof item === 'string')
-        .map((item) => item.trim())
-        .filter(Boolean)
-    : []
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
 }
 
-function normalizeAnalysis(value, model) {
-  const facts = Array.isArray(value?.confirmedFacts)
-    ? value.confirmedFacts
-        .filter(
-          (item) =>
-            item &&
-            typeof item.label === 'string' &&
-            typeof item.value === 'string',
-        )
-        .map((item) => ({
-          label: item.label.trim(),
-          value: item.value.trim(),
-        }))
-        .filter((item) => item.label && item.value)
+function stringArray(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item.trim()
+        if (item && typeof item.text === 'string') return item.text.trim()
+        if (item && typeof item.value === 'string') return item.value.trim()
+        return ''
+      })
+      .filter(Boolean)
+  }
+
+  if (typeof value === 'string' && value.trim()) return [value.trim()]
+  return []
+}
+
+function analysisRoot(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+  const wrapped =
+    value.analysis ||
+    value.result ||
+    value.data ||
+    value.output ||
+    value.caseAnalysis ||
+    value.case_analysis
+
+  return wrapped && typeof wrapped === 'object' && !Array.isArray(wrapped)
+    ? wrapped
+    : value
+}
+
+function fallbackSubject(language) {
+  if (language === 'Japanese') return 'お問い合わせ内容の確認と対応のお願い'
+  if (language === 'Spanish') return 'Solicitud de revisión y asistencia'
+  return 'Request for review and assistance'
+}
+
+function fallbackBody({ language, greeting, originalMessage, requestedOutcome }) {
+  const source = originalMessage || ''
+
+  if (language === 'Japanese') {
+    return [
+      greeting,
+      '',
+      source,
+      '',
+      requestedOutcome,
+      '',
+      'ご確認のうえ、ご対応をお願いいたします。',
+    ]
+      .filter((line, index, lines) => line || (index > 0 && lines[index - 1]))
+      .join('\n')
+      .trim()
+  }
+
+  if (language === 'Spanish') {
+    return [
+      greeting,
+      '',
+      source,
+      '',
+      requestedOutcome,
+      '',
+      'Le agradecería que revisara este asunto y me informara sobre los próximos pasos.',
+    ]
+      .filter((line, index, lines) => line || (index > 0 && lines[index - 1]))
+      .join('\n')
+      .trim()
+  }
+
+  return [
+    greeting,
+    '',
+    source,
+    '',
+    requestedOutcome,
+    '',
+    'Please review this matter and let me know the next steps.',
+  ]
+    .filter((line, index, lines) => line || (index > 0 && lines[index - 1]))
+    .join('\n')
+    .trim()
+}
+
+function normalizeAnalysis(value, model, context) {
+  const root = analysisRoot(value)
+  const draftSource =
+    root.draft ||
+    root.emailDraft ||
+    root.email_draft ||
+    root.messageDraft ||
+    root.message_draft ||
+    {}
+
+  const rawFacts =
+    root.confirmedFacts || root.confirmed_facts || root.facts || []
+
+  const facts = Array.isArray(rawFacts)
+    ? rawFacts
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null
+          const label = firstString(item.label, item.name, item.key, item.field)
+          const factValue = firstString(
+            item.value,
+            item.text,
+            item.detail,
+            item.content,
+          )
+          return label && factValue ? { label, value: factValue } : null
+        })
+        .filter(Boolean)
     : []
+
+  const requestedOutcome = firstString(
+    root.requestedOutcome,
+    root.requested_outcome,
+    root.desiredOutcome,
+    root.desired_outcome,
+    root.request,
+    context.userRequest,
+  )
+
+  const subject = firstString(
+    draftSource.subject,
+    draftSource.title,
+    root.subject,
+    root.emailSubject,
+    root.email_subject,
+    fallbackSubject(context.interfaceLanguage),
+  )
+
+  const body = firstString(
+    draftSource.body,
+    draftSource.message,
+    draftSource.content,
+    draftSource.email,
+    root.body,
+    root.message,
+    root.emailBody,
+    root.email_body,
+    fallbackBody({
+      language: context.interfaceLanguage,
+      greeting: context.greeting,
+      originalMessage: context.originalMessage,
+      requestedOutcome,
+    }),
+  )
 
   return {
     confirmedFacts: facts,
-    userStatements: stringArray(value?.userStatements),
-    requestedOutcome:
-      typeof value?.requestedOutcome === 'string'
-        ? value.requestedOutcome.trim()
-        : '',
-    unconfirmedInformation: stringArray(value?.unconfirmedInformation),
-    followUpQuestions: stringArray(value?.followUpQuestions),
-    draft: {
-      subject:
-        typeof value?.draft?.subject === 'string'
-          ? value.draft.subject.trim()
-          : '',
-      body:
-        typeof value?.draft?.body === 'string'
-          ? value.draft.body.trim()
-          : '',
-    },
+    userStatements: stringArray(
+      root.userStatements || root.user_statements || root.statements,
+    ),
+    requestedOutcome,
+    unconfirmedInformation: stringArray(
+      root.unconfirmedInformation ||
+        root.unconfirmed_information ||
+        root.uncertainInformation ||
+        root.uncertain_information,
+    ),
+    followUpQuestions: stringArray(
+      root.followUpQuestions ||
+        root.follow_up_questions ||
+        root.questions,
+    ),
+    draft: { subject, body },
     meta: { mode: 'nebius', model },
   }
 }
@@ -347,14 +477,24 @@ Future recipient language: ${recipientLanguage}`
       )
     }
 
-    const result = normalizeAnalysis(parsed, model)
+    const result = normalizeAnalysis(parsed, model, {
+      interfaceLanguage,
+      greeting,
+      originalMessage,
+      userRequest,
+    })
 
     if (
       !result.requestedOutcome ||
       !result.draft.subject ||
       !result.draft.body
     ) {
-      console.error('analyze-case: incomplete model result')
+      console.error('analyze-case: incomplete model result', {
+        rootKeys: Object.keys(parsed || {}).slice(0, 30),
+        hasRequestedOutcome: Boolean(result.requestedOutcome),
+        hasSubject: Boolean(result.draft.subject),
+        hasBody: Boolean(result.draft.body),
+      })
       return json(
         { error: 'The AI returned an incomplete analysis. Please try again.' },
         502,
