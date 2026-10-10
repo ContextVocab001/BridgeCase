@@ -151,16 +151,6 @@ function App() {
   const hasRequest = request.trim().length > 0
   const canAnalyze = (hasMessage || hasFiles) && hasRequest
 
-  const seedDemo = (lang: Lang = language) => {
-    const n = copy[lang]
-    setFacts(n.factLabels.map((label, i) => ({ label, value: n.factValues[i] })))
-    setStatements([...n.statements])
-    setOutcome(n.outcome)
-    setUnknown([...n.unknown])
-    setDraftSubject(n.draftSubject)
-    setDraftBody(n.draftBody)
-  }
-
   const applyAnalysis = (analysis: CaseAnalysis) => {
     setFacts(analysis.confirmedFacts)
     setStatements(analysis.userStatements)
