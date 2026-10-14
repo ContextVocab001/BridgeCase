@@ -1,15 +1,19 @@
 import { useRef, useState } from 'react'
+import * as pdfjs from 'pdfjs-dist'
+import { MsgReader } from '@kenjiuno/msgreader-web-ng'
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ChangeEvent, DragEvent } from 'react'
 import './App.css'
-import { analyzeCase } from './api/caseAnalysis'
-import type { CaseAnalysis } from './api/caseAnalysis'
+import { analyzeCase, runOcr, translateApprovedDraft } from './api/caseAnalysis'
+import type { CaseAnalysis, UploadedSource } from './api/caseAnalysis'
+
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker
 
 type Lang = 'en' | 'ja' | 'es'
 type Step = 'email' | 'documents' | 'request'
 type View = 'intake' | 'review' | 'draft' | 'translation'
 
 type Option = { value: Lang; label: string }
-type Fact = { label: string; value: string }
 
 const MAX_FILES = 5
 const MAX_TOTAL_SIZE = 25 * 1024 * 1024
@@ -104,19 +108,53 @@ const copy = {
   },
 }
 
-const translatedEmail = {
-  en: {
-    subject: 'Solicitud de reembolso por cargos incorrectos de estacionamiento',
-    body: `Estimado equipo de facturación:\n\nRevisé la factura final de mi estancia y encontré cargos de estacionamiento que considero que se añadieron por error.\n\nNo utilicé el estacionamiento del hotel durante mi estancia. También informé a la recepción de que no había estacionado ningún vehículo y me dijeron que no se me cobraría. Sin embargo, los cargos aparecieron en la factura final.\n\nSolicito el reembolso completo de $50 y la confirmación del motivo del cargo y de la fecha prevista para el reembolso.\n\nGracias por su ayuda.`,
-  },
-  ja: {
-    subject: 'Request for Refund of Incorrect Parking Charges',
-    body: `Dear Billing Team,\n\nI reviewed the final bill for my stay and found parking charges that I believe were added incorrectly.\n\nI did not use the hotel parking lot during my stay. I informed the front desk that I was not parking a car and was told that I would not be charged. However, the parking charges still appeared on my final bill.\n\nPlease refund the full parking amount of $50. I would also appreciate an explanation of why the charges were added and confirmation of when the refund will be processed.\n\nThank you for your assistance.`,
-  },
-  es: {
-    subject: 'Request for Refund of Incorrect Parking Charges',
-    body: `Dear Billing Team,\n\nI reviewed the final bill and found parking charges that I believe were added incorrectly.\n\nI did not use the hotel parking lot. I informed the front desk and was told that I would not be charged. However, the charge appeared on the final bill.\n\nPlease refund the full $50 and confirm why the charge was added and when the refund will be processed.\n\nThank you for your assistance.`,
-  },
+function fileToDataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file) }) }
+function fileToText(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsText(file) }) }
+function parseEml(raw: string) {
+  const split = raw.search(/\r?\n\r?\n/)
+  const headers = split >= 0 ? raw.slice(0, split).replace(/\r?\n[ \t]+/g, ' ') : ''
+  const body = split >= 0 ? raw.slice(split).trim() : raw
+  const value = (name: string) => new RegExp(`^${name}:\\s*(.+)$`, 'im').exec(headers)?.[1]?.trim() || ''
+  const attachments = Array.from(raw.matchAll(/filename\*?=(?:UTF-8''|"?)([^";\r\n]+)/gi)).map((match) => { try { return decodeURIComponent(match[1].replace(/^"|"$/g, '')) } catch { return match[1] } })
+  return `From: ${value('From')}\nReply-To: ${value('Reply-To')}\nDate: ${value('Date')}\nSubject: ${value('Subject')}\nAttachments: ${attachments.join(', ')}\n\n${body}`
+}
+async function parseMsg(file: File) {
+  const reader = new MsgReader(await file.arrayBuffer())
+  const info = reader.getFileData() as any
+  if (info?.error) throw new Error(`Outlook MSG parse failed: ${String(info.error)}`)
+  const recipients = Array.isArray(info?.recipients)
+    ? info.recipients.map((item: any) => item?.email || item?.name).filter(Boolean).join(', ')
+    : ''
+  const attachments = Array.isArray(info?.attachments)
+    ? info.attachments.map((item: any) => item?.fileName || item?.fileNameShort).filter(Boolean).join(', ')
+    : ''
+  return [
+    `From: ${info?.senderName || info?.senderEmail || ''}`,
+    `To: ${recipients}`,
+    `Subject: ${info?.subject || ''}`,
+    `Attachments: ${attachments}`,
+    '',
+    info?.body || info?.bodyHTML || info?.headers || ''
+  ].join('\n')
+}
+
+async function filesToOcrImages(files: File[]) {
+  const images: string[] = []
+  for (const file of files) {
+    if (file.type.startsWith('image/')) { images.push(await fileToDataUrl(file)); continue }
+    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise
+      for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 6); pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber)
+        const viewport = page.getViewport({ scale: 1.8 })
+        const canvas = document.createElement('canvas'); canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height)
+        const context = canvas.getContext('2d'); if (!context) continue
+        await page.render({ canvas, canvasContext: context, viewport }).promise
+        images.push(canvas.toDataURL('image/jpeg', .9))
+      }
+    }
+  }
+  return images
 }
 
 function App() {
@@ -125,59 +163,77 @@ function App() {
   const [step, setStep] = useState<Step>('email')
   const [view, setView] = useState<View>('intake')
   const [message, setMessage] = useState('')
+  const [showPaste, setShowPaste] = useState(false)
+  const [messageFiles, setMessageFiles] = useState<File[]>([])
   const [request, setRequest] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const [fileError, setFileError] = useState('')
   const [isDragging, setIsDragging] = useState(false)
-  const [copyStatus, setCopyStatus] = useState<'subject' | 'message' | 'error' | null>(null)
+  const [isMessageDragging, setIsMessageDragging] = useState(false)
+  const [messageFileError, setMessageFileError] = useState('')
+  const [copyStatus, setCopyStatus] = useState<'subject' | 'message' | 'all' | 'error' | null>(null)
   const [showStructure, setShowStructure] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState('')
-  const [facts, setFacts] = useState<Fact[]>([])
-  const [statements, setStatements] = useState<string[]>([])
-  const [outcome, setOutcome] = useState('')
-  const [unknown, setUnknown] = useState<string[]>([])
-  const [options, setOptions] = useState([true, true, false])
-  const [editingFacts, setEditingFacts] = useState(false)
+  const [analysis, setAnalysis] = useState<CaseAnalysis | null>(null)
+  const [additional, setAdditional] = useState<Record<string,string>>({})
   const [draftSubject, setDraftSubject] = useState('')
   const [draftBody, setDraftBody] = useState('')
+  const [translated, setTranslated] = useState({ subject: '', body: '' })
   const [translationApproved, setTranslationApproved] = useState(false)
+  const messageInputRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const t = copy[language]
 
-  const hasMessage = message.trim().length > 0
+  const hasMessage = message.trim().length > 0 || messageFiles.length > 0
   const hasFiles = files.length > 0
   const hasRequest = request.trim().length > 0
-  const canAnalyze = (hasMessage || hasFiles) && hasRequest
+  const canAnalyze = hasRequest
 
-  const applyAnalysis = (analysis: CaseAnalysis) => {
-    setFacts(analysis.confirmedFacts)
-    setStatements(analysis.userStatements)
-    setOutcome(analysis.requestedOutcome)
-    setUnknown(analysis.unconfirmedInformation)
-    setDraftSubject(analysis.draft.subject)
-    setDraftBody(analysis.draft.body)
-  }
   const analyzeCurrentCase = async () => {
-    setIsAnalyzing(true)
-    setAnalysisError('')
+    if (!request.trim()) { setAnalysisError(language === 'ja' ? '何が問題で、どうしてほしいかを入力してください。' : 'Describe the issue and requested outcome.'); return }
+    setIsAnalyzing(true); setAnalysisError('')
     try {
-      const [analysis] = await Promise.all([
-        analyzeCase({ originalMessage: message, userRequest: request, interfaceLanguage: language, recipientLanguage, documents: files.map(file => ({ name:file.name, type:file.type, size:file.size })) }),
-        new Promise(resolve => window.setTimeout(resolve, 450)),
-      ])
-      applyAnalysis(analysis)
-      setShowModal(false)
-      go('review')
-    } catch (error) {
-      const fallback = language==='ja' ? '案件を整理できませんでした。もう一度試してください。' : language==='es' ? 'No se pudo organizar el caso. Inténtalo de nuevo.' : 'The case could not be organized. Please try again.'
-      setAnalysisError(error instanceof Error ? error.message : fallback)
-    } finally { setIsAnalyzing(false) }
+      const emlTexts = await Promise.all(messageFiles.filter((file) => file.name.toLowerCase().endsWith('.eml')).map(async (file) => parseEml(await fileToText(file))))
+      const msgTexts = await Promise.all(messageFiles.filter((file) => file.name.toLowerCase().endsWith('.msg') || file.type === 'application/vnd.ms-outlook').map(parseMsg))
+      const messageImages = await filesToOcrImages(messageFiles.filter((file) => !/\.(eml|msg)$/i.test(file.name) && file.type !== 'application/vnd.ms-outlook'))
+      const documentImages = await filesToOcrImages(files)
+      const [messageOcr, documentOcr] = await Promise.all([messageImages.length ? runOcr(messageImages) : Promise.resolve({ text: '', pages: [] }), documentImages.length ? runOcr(documentImages) : Promise.resolve({ text: '', pages: [] })])
+      const originalMessage = [message, ...emlTexts, ...msgTexts, messageOcr.text].filter(Boolean).join('\n\n--- MESSAGE SOURCE ---\n\n')
+      const documents: UploadedSource[] = files.map((file) => ({ name: file.name, type: file.type, size: file.size }))
+      const result = await analyzeCase({ originalMessage, userRequest: request, interfaceLanguage: language, recipientLanguage, documents, documentText: documentOcr.text, additionalInformation: additional })
+      setAnalysis(result); setDraftSubject(result.draft.subject); setDraftBody(result.draft.body); setShowModal(false); go('review')
+    } catch (error) { setAnalysisError(error instanceof Error ? error.message : 'Analysis failed.') } finally { setIsAnalyzing(false) }
   }
-
+  const translateDraft = async () => {
+    setIsAnalyzing(true); setAnalysisError('')
+    try { const result = await translateApprovedDraft({ originalMessage:'', userRequest:'', interfaceLanguage:language, recipientLanguage, documents:[], approvedSubject:draftSubject, approvedBody:draftBody }); setTranslated(result); setTranslationApproved(false); go('translation') }
+    catch(error){ setAnalysisError(error instanceof Error ? error.message : 'Translation failed.') } finally { setIsAnalyzing(false) }
+  }
   const changeLanguage = (lang: Lang) => {
     setLanguage(lang)
+  }
+
+  const addMessageFiles = (added: File[]) => {
+    const supported = added.filter((file) =>
+      ['message/rfc822', 'application/vnd.ms-outlook', 'application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'application/octet-stream'].includes(file.type) ||
+      /\.(eml|msg|pdf|png|jpe?g|webp)$/i.test(file.name)
+    )
+    setMessageFileError('')
+    if (supported.length !== added.length) {
+      setMessageFileError(language === 'ja' ? 'OutlookメールはMSGまたはEML形式で追加してください。PDF、PNG、JPG、WEBPにも対応しています。' : 'Add Outlook email as MSG or EML. PDF, PNG, JPG, and WEBP are also supported.')
+      return
+    }
+    const next = [...messageFiles, ...supported]
+    if (next.length > MAX_FILES) { setMessageFileError(language === 'ja' ? `最大${MAX_FILES}ファイルです。` : `Maximum ${MAX_FILES} files.`); return }
+    if (next.reduce((sum, file) => sum + file.size, 0) > MAX_TOTAL_SIZE) { setMessageFileError(language === 'ja' ? '合計ファイルサイズは25MBまでです。' : 'Maximum total size is 25 MB.'); return }
+    setMessageFiles(next)
+  }
+  const onMessageFiles = (event: ChangeEvent<HTMLInputElement>) => { addMessageFiles(Array.from(event.target.files ?? [])); event.target.value = '' }
+  const onDropMessageFiles = (event: DragEvent<HTMLButtonElement>) => {
+    event.preventDefault(); event.stopPropagation(); setIsMessageDragging(false)
+    addMessageFiles(Array.from(event.dataTransfer.files ?? []))
   }
 
   const addFiles = (added: File[]) => {
@@ -198,7 +254,7 @@ function App() {
     addFiles(Array.from(event.dataTransfer.files ?? []))
   }
   const formatSize = (size: number) => size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / (1024 * 1024)).toFixed(1)} MB`
-  const copyText = async (kind: 'subject' | 'message', value: string) => {
+  const copyText = async (kind: 'subject' | 'message' | 'all', value: string) => {
     try {
       await navigator.clipboard.writeText(value)
       setCopyStatus(kind)
@@ -259,7 +315,7 @@ function App() {
       <section className="case-card"><div className="case-head"><p>{t.newCase}</p><h2>{t.caseTitle}</h2><span>{t.caseHelp}</span></div>
         <div className="step-tabs">{(['email','documents','request'] as Step[]).map((s,i)=><button className={step===s?'active':''} onClick={()=>setStep(s)} key={s}><span>{i+1}</span>{t.tabs[i]}</button>)}</div>
         <div className="form-area">
-          {step==='email'&&<><h3>{t.emailTitle}</h3><p className="help">{t.emailHelp}</p><textarea value={message} onChange={e=>setMessage(e.target.value)} placeholder={t.emailPlaceholder}/><div className="notice success"><b>✓ {t.controlTitle}</b><p>{t.controlText}</p></div></>}
+          {step==='email'&&<><h3>{language==='ja'?'相手から届いたメッセージ':language==='es'?'Mensaje recibido':'Message from the company'}</h3><p className="help">{language==='ja'?'メールファイル、PDF、スクリーンショットを追加できます。メッセージがなければスキップできます。':language==='es'?'Añada un correo, PDF o captura. Puede omitirlo si no existe.':'Add an email, PDF, or screenshot. You can skip this if no message exists.'}</p><input ref={messageInputRef} hidden type="file" multiple accept=".msg,.eml,.pdf,.png,.jpg,.jpeg,.webp,application/vnd.ms-outlook,message/rfc822" onChange={onMessageFiles}/><button type="button" className={`upload-zone message-upload ${isMessageDragging?'dragging':''}`} onClick={()=>messageInputRef.current?.click()} onDragEnter={event=>{event.preventDefault();event.stopPropagation();setIsMessageDragging(true)}} onDragOver={event=>{event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='copy'}} onDragLeave={event=>{event.preventDefault();event.stopPropagation();setIsMessageDragging(false)}} onDrop={onDropMessageFiles}><span className="upload-main"><b>{isMessageDragging?'↓':'＋'}</b><strong>{isMessageDragging?(language==='ja'?'ここにドロップしてください':'Drop the file here'):(language==='ja'?'Outlookメール・スクリーンショットを追加':language==='es'?'Añadir correo o captura':'Add Outlook email or screenshot')}</strong><small>MSG · EML · PDF · PNG · JPG · WEBP</small></span></button>{messageFileError&&<div className="notice error">{messageFileError}</div>}{messageFiles.length>0&&<div className="files">{messageFiles.map((file,index)=><div className="file" key={`${file.name}-${index}`}><span>{file.name}</span><button onClick={()=>setMessageFiles(value=>value.filter((_,position)=>position!==index))}>{t.remove}</button></div>)}</div>}<div className="notice info"><p>{language==='ja'?'メール内の添付資料はここでは分析しません。領収書や明細は次の「資料」で追加してください。':language==='es'?'Los adjuntos no se analizan aquí. Añada recibos en Documentos.':'Email attachments are not analyzed here. Add receipts and statements in Documents.'}</p></div><div className="or-divider"><span>{language==='ja'?'または':language==='es'?'o':'or'}</span></div><button className="paste-toggle" onClick={()=>setShowPaste(value=>!value)}>{showPaste?'−':'＋'} {language==='ja'?'メール本文を貼り付ける':language==='es'?'Pegar el texto':'Paste message text'}</button>{showPaste&&<textarea className="compact-message" value={message} onChange={e=>setMessage(e.target.value)} placeholder={t.emailPlaceholder}/>}</>}
           {step==='documents'&&<><h3>{t.docsTitle}</h3><p className="help">{t.docsHelp}</p><div className="requirements">{t.checks.map(x=><span key={x}>✓ {x}</span>)}</div><input className="hidden" ref={inputRef} type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={onFiles}/><button type="button" className={`upload ${isDragging?'dragging':''} ${files.length?'has-files':''}`} onClick={()=>inputRef.current?.click()} onDragEnter={event=>{event.preventDefault();setIsDragging(true)}} onDragOver={event=>event.preventDefault()} onDragLeave={()=>setIsDragging(false)} onDrop={onDropFiles}>{files.length===0?<><strong>↑</strong><b>{isDragging?(language==='ja'?'ここにファイルをドロップ':language==='es'?'Suelta los archivos aquí':'Drop files here'):t.choose}</b><span>{t.select}</span><small>{t.limits}</small></>:<><strong>✓</strong><b>{language==='ja'?`${files.length}件のファイルを追加しました`:language==='es'?`${files.length} archivo(s) añadido(s)`:`${files.length} file(s) added`}</b><div className="upload-file-list">{files.map(file=><span key={`${file.name}-${file.lastModified}`}><b>{file.name}</b><small>{formatSize(file.size)}</small></span>)}</div><span>{language==='ja'?'クリックまたはドロップしてさらに追加':language==='es'?'Haz clic o suelta más archivos':'Click or drop to add more'}</span></>}</button><div className="notice success"><b>✓ {t.noCompress}</b><p>{t.noCompressText}</p></div>{fileError&&<div className="notice error">{fileError}</div>}{files.length>0&&<div className="files"><header><b>{t.selected}</b><span>{files.length}/{MAX_FILES}</span></header>{files.map((f,i)=><div className="file" key={`${f.name}-${f.lastModified}`}><span><b>{f.type==='application/pdf'?'PDF':'IMG'}</b> {f.name} <small>{formatSize(f.size)}</small></span><button onClick={()=>setFiles(v=>v.filter((_,n)=>n!==i))}>{t.remove}</button></div>)}</div>}</>}
           {step==='request'&&<><h3>{t.requestTitle}</h3><p className="help">{t.requestHelp}</p><div className="natural"><b>{t.naturalTitle}</b><p>{t.naturalNote}</p><blockquote>{t.naturalExample}</blockquote></div><button className="text-button" onClick={()=>setShowStructure(v=>!v)}>{showStructure?'▴':'▾'} {showStructure?t.hideStructure:t.showStructure}</button>{showStructure&&<div className="structure">{t.structure.map((x,i)=><div key={x}><span>{i+1}</span><b>{x}</b></div>)}</div>}<textarea className="request-area" value={request} onChange={e=>setRequest(e.target.value)} placeholder={t.placeholder}/><div className="recipient"><div><b>{t.companyLang}</b><p>{t.companyLangHelp}</p></div><select value={recipientLanguage} onChange={e=>setRecipientLanguage(e.target.value as Lang)}>{recipientOptions[language].map(o=><option value={o.value} key={o.value}>{o.label}</option>)}</select></div><div className="notice warning notice-with-icon"><span className="notice-icon">!</span><div><b>{t.privacy}</b><p>{t.privacyText}</p></div></div></>}
           <div className="actions"><button>{t.save}</button>{step!=='request'?<button className="primary" onClick={()=>setStep(step==='email'?'documents':'request')}>{t.next} →</button>:<button className="primary" onClick={()=>setShowModal(true)}>{t.analyze} →</button>}</div>
@@ -268,23 +324,22 @@ function App() {
     </main>
   )
 
-  const review = (
-    <main className="workflow-main">{progress(2)}<section className="workflow-heading"><p>{t.demo}</p><h1>{t.reviewTitle}</h1><span>{t.reviewHelp}</span></section><div className="demo"><b>i</b><div><strong>{t.demoTitle}</strong><p>{t.demoText}</p></div></div>
-      <section className="review-card"><header><h2>{t.sections[0]}</h2><button className="text-button" onClick={()=>setEditingFacts(v=>!v)}>{editingFacts?t.done:t.edit}</button></header><div className="facts">{facts.map((f,i)=><label key={`${f.label}-${i}`}><span>{f.label}</span>{editingFacts?<input value={f.value} onChange={e=>setFacts(v=>v.map((x,n)=>n===i?{...x,value:e.target.value}:x))}/>:<b>{f.value}</b>}</label>)}</div></section>
-      <section className="review-card"><h2>{t.sections[1]}</h2><div className="editable">{statements.map((x,i)=><div key={i}><span>{i+1}</span><textarea value={x} onChange={e=>setStatements(v=>v.map((y,n)=>n===i?e.target.value:y))}/></div>)}</div></section>
-      <section className="review-card"><h2>{t.sections[2]}</h2><textarea value={outcome} onChange={e=>setOutcome(e.target.value)}/></section>
-      <section className="review-card unknown"><h2>{t.sections[3]}</h2><div className="editable">{unknown.map((x,i)=><div key={i}><span>?</span><textarea value={x} onChange={e=>setUnknown(v=>v.map((y,n)=>n===i?e.target.value:y))}/></div>)}</div></section>
-      <section className="review-card"><h2>{t.sections[4]}</h2><div className="check-list">{t.options.map((x,i)=><label key={x}><input type="checkbox" checked={options[i]} onChange={e=>setOptions(v=>v.map((y,n)=>n===i?e.target.checked:y))}/><span>{x}</span></label>)}</div></section>
-      <div className="workflow-actions"><button onClick={()=>go('intake')}>← {t.back}</button><button className="primary" onClick={()=>go('draft')}>{t.createDraft} →</button></div>
+  const review = analysis && (
+    <main className="workflow-main">{progress(2)}<section className="workflow-heading"><p>{t.demo}</p><h1>{t.reviewTitle}</h1><span>{t.reviewHelp}</span></section>
+      {analysis.messageSource.isNoReply&&<div className="no-reply-warning"><b>Do Not Reply</b><p>{language==='ja'?'元のメッセージは送信専用です。別の公式問い合わせ方法を使用してください。':'The original message cannot receive replies. Use another official contact route.'}</p><small>{analysis.messageSource.noReplyReason}</small></div>}
+      <section className="review-card"><h2>{language==='ja'?'資料・メッセージから確認できた内容':'Confirmed from messages and documents'}</h2><div className="facts">{analysis.confirmedFacts.map((fact,index)=><label key={`${fact.label}-${index}`}><span>{fact.label}</span><b>{fact.value}</b></label>)}</div></section>
+      <section className="review-card"><h2>{language==='ja'?'あなたが説明した内容':'What you explained'}</h2><ul className="statement-list">{analysis.userStatements.map((item,index)=><li key={index}>{item}</li>)}</ul></section>
+      <section className="review-card"><h2>{language==='ja'?'希望する対応':'Requested outcome'}</h2><p className="requested-outcome">{analysis.requestedOutcome}</p></section>
+      <section className={`review-card readiness ${analysis.readiness.ready?'ready':'blocked'}`}><h2>{language==='ja'?'送信準備状況':'Readiness'}</h2><div className="readiness-checks"><span>{analysis.readiness.targetIdentified?'✓':'○'} Target</span><span>{analysis.readiness.transactionIdentified?'✓':'○'} Case</span><span>{analysis.readiness.issueIdentified?'✓':'○'} Issue</span><span>{analysis.readiness.outcomeIdentified?'✓':'○'} Request</span></div><p>{analysis.readiness.ready?(language==='ja'?'必要な情報が揃っています。追加の入力は必要ありません。':'The required information is available.'):(language==='ja'?'問い合わせを完成させるため、次の情報を追加してください。':'Add the following information.')}</p>{!analysis.readiness.ready&&<div className="missing-fields">{analysis.readiness.missingFields.map(field=><label key={field.key}><b>{field.label}</b><small>{field.reason}</small><input value={additional[field.key]||''} onChange={e=>setAdditional({...additional,[field.key]:e.target.value})} placeholder={field.alternatives?.join(' / ')}/></label>)}<button className="primary" onClick={analyzeCurrentCase}>{language==='ja'?'追加情報を反映して再確認':'Review again'}</button></div>}</section>
+      <section className="review-card"><h2>{language==='ja'?'相手が案件を特定するための情報':'Reference information'}</h2><div className="facts">{analysis.referenceInformation.map((fact,index)=><label key={`${fact.label}-${index}`}><span>{fact.label}</span><b>{fact.value}</b></label>)}</div></section>
+      <div className="workflow-actions"><button onClick={()=>go('intake')}>← {t.back}</button><button className="primary" disabled={!analysis.readiness.ready} onClick={()=>go('draft')}>{language==='ja'?'問い合わせ文を作成':'Create inquiry'} →</button></div>
     </main>
   )
-
   const draft = (
-    <main className="workflow-main">{progress(3)}<section className="workflow-heading"><p>{t.draftLabel}</p><h1>{t.draftTitle}</h1><span>{t.draftHelp}</span></section><section className="draft-card"><label><span>{t.subject}</span><input value={draftSubject} onChange={e=>setDraftSubject(e.target.value)}/></label><label><span>{t.message}</span><textarea className="draft-area" value={draftBody} onChange={e=>setDraftBody(e.target.value)}/></label><div className="notice success action-guidance"><b>✓ {t.draftNoticeTitle}</b><p>{t.draftNoticeText}</p><small>{t.draftNoticeFootnote}</small></div></section><div className="workflow-actions"><button onClick={()=>go('review')}>← {t.back}</button><button className="primary" onClick={()=>{setTranslationApproved(false);go('translation')}}>{t.approveDraft} →</button></div></main>
+    <main className="workflow-main">{progress(3)}<section className="workflow-heading"><p>{t.draftLabel}</p><h1>{language==='ja'?'問い合わせ文を確認':t.draftTitle}</h1><span>{language==='ja'?'OCRで読み取った識別情報と請求内容を含めています。自由に修正してから翻訳してください。':t.draftHelp}</span></section><section className="draft-card"><label><span>{t.subject}</span><input value={draftSubject} onChange={e=>setDraftSubject(e.target.value)}/></label><label><span>{t.message}</span><textarea className="draft-area" value={draftBody} onChange={e=>setDraftBody(e.target.value)}/></label></section>{analysisError&&<div className="analysis-api-error">{analysisError}</div>}<div className="workflow-actions"><button onClick={()=>go('review')}>← {t.back}</button><button className="primary" disabled={isAnalyzing} onClick={translateDraft}>{isAnalyzing?(language==='ja'?'翻訳しています…':'Translating…'):(language==='ja'?'この内容を承認して翻訳':t.approveDraft)} →</button></div></main>
   )
-
   const translation = (
-    <main className="workflow-main">{progress(4)}<section className="workflow-heading"><p>{t.translationLabel}</p><h1>{translationApproved?t.completion:t.translationTitle}</h1><span>{translationApproved?t.completionText:t.translationHelp}</span></section>{!translationApproved?<><section className="translation-grid"><article><header><span>Aa</span><b>{t.approvedVersion}</b></header><h2>{draftSubject}</h2><pre>{draftBody}</pre></article><article><header><span>⇄</span><b>{t.translatedVersion}</b></header><h2>{translatedEmail[language].subject}</h2><pre>{translatedEmail[language].body}</pre></article></section><section className="verify"><h2>✓ {t.verify}</h2><p>{t.safe}</p><div>{t.verification.map(x=><span key={x}>✓ {x}</span>)}</div></section><div className="workflow-actions"><button onClick={()=>go('draft')}>← {t.backDraft}</button><button className="primary" onClick={()=>{setTranslationApproved(true);window.scrollTo(0,0)}}>{t.approveTranslation} →</button></div></>:<section className="complete"><div className="complete-heading"><div className="complete-check">✓</div><div><h2>{t.completion}</h2><p>{t.completionText}</p></div></div><div className="notice success notice-with-icon action-guidance next-step-guidance"><span className="notice-icon next-icon">→</span><div><b>{t.nextStepTitle}</b><p>{t.nextStepText}</p><small>{t.nextStepFootnote}</small></div></div><p className="approval-edit-note">{t.approvalEditNote}</p><footer className="complete-actions"><button onClick={()=>{setTranslationApproved(false);window.scrollTo(0,0)}}>← {t.editTranslation}</button><div className="copy-actions"><button onClick={()=>copyText('subject',translatedEmail[language].subject)}>{copyStatus==='subject'?`✓ ${t.subjectCopied}`:t.copySubject}</button><button onClick={()=>copyText('message',translatedEmail[language].body)}>{copyStatus==='message'?`✓ ${t.messageCopied}`:t.copyMessage}</button></div><button className="primary open-email-button" onClick={()=>window.location.href=`mailto:?subject=${encodeURIComponent(translatedEmail[language].subject)}&body=${encodeURIComponent(translatedEmail[language].body)}`}>{t.openEmail} →</button></footer>{copyStatus==='error'&&<p className="copy-feedback error-text">{t.copyFailed}</p>}</section>}</main>
+    <main className="workflow-main">{progress(4)}{!translationApproved?<><section className="workflow-heading"><p>{t.translationLabel}</p><h1>{t.translationTitle}</h1><span>{language==='ja'?'右側は、承認した文章だけを忠実に翻訳したものです。新しい要求や事実は追加しません。':t.translationHelp}</span></section><section className="translation-grid"><article><header><span>Aa</span><b>{t.approvedVersion}</b></header><h2>{draftSubject}</h2><pre>{draftBody}</pre></article><article><header><span>⇄</span><b>{t.translatedVersion}</b></header><h2>{translated.subject}</h2><pre>{translated.body}</pre></article></section><div className="workflow-actions"><button onClick={()=>go('draft')}>← {t.backDraft}</button><button className="primary" onClick={()=>{setTranslationApproved(true);window.scrollTo(0,0)}}>{t.approveTranslation} →</button></div></>:<section className="complete contact-complete"><div className="complete-heading"><div className="complete-check">✓</div><div><h2>{language==='ja'?'問い合わせ文の準備ができました':'Your inquiry is ready'}</h2><p>{language==='ja'?'候補を確認し、文章と補足情報を公式フォームやメールへコピーしてください。自動送信はしません。':'Review a candidate and copy the message into the official contact route.'}</p></div></div>{analysis?.messageSource.isNoReply&&<div className="no-reply-warning"><b>Do Not Reply</b><p>{language==='ja'?'元のメールアドレスは問い合わせ先候補から除外しました。':'The original address was excluded.'}</p></div>}<h3>{language==='ja'?'問い合わせ先候補':'Contact candidates'}</h3><div className="contact-candidates">{analysis?.contactCandidates.map((candidate,index)=><article key={`${candidate.label}-${index}`}><div>{candidate.recommended&&<mark>{language==='ja'?'おすすめ':'Recommended'}</mark>}<b>{candidate.label}</b><p>{candidate.reason}</p>{candidate.kind==='search'&&<small>{language==='ja'?'検索結果から、施設名や所在地が一致する公式ページを確認してください。':'Confirm the official company/property page.'}</small>}</div><a href={candidate.url} target="_blank" rel="noreferrer">{language==='ja'?'公式ページ・情報源を確認':'Open source'} ↗</a></article>)}</div><section className="final-message"><h3>{language==='ja'?'完成した問い合わせ文':'Completed inquiry'}</h3><label>{t.subject}</label><h2>{translated.subject}</h2><label>{t.message}</label><pre>{translated.body}</pre><div className="copy-actions"><button onClick={()=>copyText('subject',translated.subject)}>{copyStatus==='subject'?'✓':language==='ja'?'件名をコピー':'Copy subject'}</button><button onClick={()=>copyText('message',translated.body)}>{copyStatus==='message'?'✓':language==='ja'?'本文をコピー':'Copy message'}</button><button className="primary" onClick={()=>copyText('all',`${translated.subject}\n\n${translated.body}`)}>{copyStatus==='all'?'✓':language==='ja'?'件名と本文をコピー':'Copy all'}</button></div></section><h3>{language==='ja'?'フォーム入力用の補足情報':'Reference details'}</h3><div className="reference-copy">{analysis?.referenceInformation.map((fact,index)=><div key={`${fact.label}-${index}`}><span><b>{fact.label}</b><small>{fact.value}</small></span><button onClick={()=>navigator.clipboard.writeText(fact.value)}>Copy</button></div>)}</div></section>}</main>
   )
 
   return <div className="app">{header}{view==='intake'&&intake}{view==='review'&&review}{view==='draft'&&draft}{view==='translation'&&translation}

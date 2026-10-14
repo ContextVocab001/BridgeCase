@@ -10,9 +10,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@kenjiuno/msgreader-web-ng": "^0.2.0-alpha1",
+    "axios": "^1.12.2",
+    "pdfjs-dist": "^5.4.296",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "axios": "^1.12.2"
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.6",
