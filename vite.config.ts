@@ -1,7 +1,9 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+// @ts-expect-error JavaScript Vercel function has no TypeScript declaration file.
 import analyzeHandler from './api/analyze-case.js'
+// @ts-expect-error JavaScript Vercel function has no TypeScript declaration file.
 import ocrHandler from './api/nvidia-ocr-test.js'
 
 type ApiResponse=ServerResponse&{status:(code:number)=>ApiResponse;json:(value:unknown)=>void}
