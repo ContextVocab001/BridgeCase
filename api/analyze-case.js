@@ -27,7 +27,11 @@ EMAIL FORMAT
 - Spanish format: "Al equipo de [Organización]:" or "A quien corresponda:"; close with "Gracias por su ayuda." then "Atentamente," and the sender name.
 - Do not place a thank-you sentence before the salutation.
 - Include exactly one salutation and one closing/signature block.
-- Keep the subject concise and include the best primary identifier when available.`
+- Keep the subject neutral, concise, and action-oriented. Describe the requested action without accusing the recipient of misconduct.
+- For ordinary refund requests, prefer wording such as "Request for Refund of Parking Charges (Folio Number: 76941)". Do not use "dispute", "unfair charge", "unauthorized charge", "fraudulent charge", "improper charge", or equivalent accusatory wording unless the user expressly chose that tone.
+- Include the best primary identifier when available and preserve its exact type. A Folio Number must remain "Folio Number" and must not be renamed Reservation Number, Confirmation Number, Booking ID, PNR, Invoice ID, or another identifier type.
+- Prefer the most specific verified organization or property name over a parent brand.
+- If a strong identifier such as a reservation number, confirmation code, PNR, ticket number, folio number, invoice ID, or order number is present, omit card brand and card last-four unless the user expressly asks to include them or the recipient explicitly requires them.`
 const result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:`APPROVED SUBJECT:
 ${i.approvedSubject}
 
@@ -61,17 +65,6 @@ AMOUNT REASONING
 - If the evidence supports a reasonable estimate without a genuine conflict, use it without blocking progress and describe it as an estimate derived from the supplied information. The user can edit the resulting draft.
 - Check arithmetic once before returning JSON. Every amount in requestedOutcome, draft subject, and draft body must agree with the selected disputed amount.
 
-SOURCE FIDELITY AND ANTI-HALLUCINATION
-- Treat OCR text, uploaded documents, original messages, and user-entered statements as the only evidence. Do not use general knowledge to fill gaps in names, addresses, locations, state/province names, room/unit types, dates, or identifiers.
-- Preserve official organization/property names, personal names, addresses, codes, abbreviations, and identifiers exactly as supplied. Do not translate, transliterate, expand, normalize, correct, or make them sound more natural.
-- In particular, never expand a place abbreviation such as CA, FL, AK, UK, or any similar token into a state, province, or country name. Never infer a state from a city or postal code.
-- Never add Apt., Suite, Unit, Room, Terminal, Gate, or similar qualifiers unless the exact qualifier appears in the evidence.
-- If two sources conflict, do not merge them into a new value and do not choose by plausibility. Omit the disputed value from the draft and, only if essential, request confirmation in the interface language.
-- Before returning JSON, verify each proper name, address, location, date, amount, and identifier by exact comparison with the supplied evidence. If exact support cannot be found, remove the value.
-- Personal addresses are normally unnecessary for case identification. Do not include or prioritize a customer/guest/passenger home address when a reservation number, confirmation code, PNR, ticket number, folio number, invoice ID, order number, transaction ID, stay/travel dates, or room number is available.
-- Do not put personal addresses in the draft unless the user's request specifically concerns the address or the recipient explicitly requires it.
-- confirmedFacts may contain only values directly supported by the supplied evidence. AI calculations must be labeled as estimates or calculations, never as document facts.
-
 RECIPIENT, IDENTIFIERS, AND MESSAGE MINIMIZATION
 - Never address the inquiry to the user, customer, guest, passenger, cardholder, account holder, or any person appearing only in To/Cc/forwarding headers. Forwarded-message senders and recipients are not recipient candidates.
 - If a verified recipient employee or department is not available, use a neutral organization salutation in ${ui}: Japanese "[Organization] ご担当者様"; English "Dear [Organization] Team,"; Spanish "Al equipo de [Organization]:". If the organization is unknown, use the language's generic equivalent.
@@ -89,6 +82,23 @@ RECIPIENT, IDENTIFIERS, AND MESSAGE MINIMIZATION
 - For a request for an itemized receipt, prefer a compact block such as invoice ID, transaction ID only if useful, payment date, and charged amount.
 - The draft must be a complete email in ${ui}: one appropriate salutation, concise body, polite closing, and sender signature.
 - Currency must be explicit everywhere in the draft. Never write a disputed monetary value as a bare number such as 50.00.
+
+SOURCE FIDELITY AND ANTI-HALLUCINATION
+- Treat OCR text, uploaded documents, original messages, and user-entered statements as the only evidence. Do not use general knowledge to fill gaps in names, addresses, locations, state/province names, room/unit types, dates, or identifiers.
+- Preserve official organization/property names, personal names, addresses, codes, abbreviations, and identifiers exactly as supplied. Do not translate, transliterate, expand, normalize, correct, or make them sound more natural.
+- Never expand a place abbreviation such as CA, FL, AK, UK, or similar into a state, province, or country name. Never infer a state from a city or postal code.
+- Never add Apt., Suite, Unit, Room, Terminal, Gate, or similar qualifiers unless the exact qualifier appears in the evidence.
+- If sources conflict, do not merge them into a new value or choose by plausibility. Omit the disputed value from the draft and ask for confirmation only if essential.
+- Before returning JSON, verify each proper name, address, location, date, amount, and identifier against the supplied evidence. If support cannot be found, remove the value.
+- Personal addresses are normally unnecessary. Do not include or prioritize a home address when a reservation number, confirmation code, PNR, ticket number, folio number, invoice ID, order number, transaction ID, stay/travel dates, or room number is available.
+- confirmedFacts may contain only values directly supported by evidence. Label AI calculations as estimates or calculations, never as document facts.
+
+NEUTRAL SUBJECTS AND EXACT IDENTIFIER TYPES
+- Keep the draft subject neutral, concise, and action-oriented. State the requested action and the best primary identifier without accusing the recipient of misconduct.
+- For ordinary refund requests, prefer localized equivalents of "Request for Refund of Parking Charges (Folio Number: 76941)". Avoid "dispute", "unfair charge", "unauthorized charge", "fraudulent charge", "improper charge", "不当請求", "不正請求", and equivalent accusatory wording unless the user expressly chose it.
+- Preserve identifier types exactly as written in the evidence. A Folio Number must remain Folio Number. Never rename it Reservation Number, Confirmation Number, Booking ID, PNR, Invoice ID, or another identifier type.
+- Prefer the most specific verified organization/property/seller name over a parent brand in the subject, salutation, and contact candidate.
+- If a strong identifier such as reservation/confirmation number, PNR, ticket number, folio number, invoice ID, order number, or rental agreement number is available, omit card brand and card last-four from the draft and final referenceInformation unless the user expressly asks for them or the recipient explicitly requires them.
 
 OUTPUT QUALITY
 - Localize generic labels such as Guest Name, Stay Dates, Property, Guest Statement, Payment Method, and Disputed Amount into ${ui}. Do not localize the underlying proper names or identifiers.
