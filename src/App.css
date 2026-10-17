@@ -648,3 +648,63 @@
 /* Drag-and-drop feedback for the Step 1 message uploader */
 .message-upload.dragging{border-color:#2f63f5;background:#eef4ff;box-shadow:0 0 0 4px rgba(47,99,245,.12)}
 .message-upload.dragging .upload-main b,.message-upload.dragging .upload-main strong{color:#2457de}
+
+/* Final inquiry actions and contact-source clarity */
+.final-copy-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-start;
+  flex-wrap:wrap;
+  gap:12px;
+  margin-top:22px;
+}
+.copy-button{
+  min-height:48px;
+  padding:0 18px;
+  border-radius:11px;
+  font-size:15px;
+  font-weight:700;
+  transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,background .15s ease;
+}
+.copy-button:hover{transform:translateY(-1px)}
+.secondary-copy{
+  border:1px solid #c8d5e7;
+  background:#fff;
+  color:#315a9a;
+}
+.secondary-copy:hover{
+  border-color:#8eafe2;
+  background:#f4f8ff;
+  box-shadow:0 6px 16px rgba(37,99,235,.08);
+}
+.main-copy{
+  min-width:220px;
+  box-shadow:0 9px 20px rgba(37,99,235,.18);
+}
+.reference-copy-button{
+  min-height:38px;
+  padding:0 13px;
+  border:1px solid #c8d5e7;
+  border-radius:9px;
+  background:#fff;
+  color:#315a9a;
+  font-weight:700;
+}
+.contact-candidates a{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:44px;
+  padding:0 15px;
+  border:1px solid #b8caf0;
+  border-radius:10px;
+  background:#f5f8ff;
+  color:#3157a8;
+  font-weight:700;
+  text-decoration:none;
+}
+.contact-candidates a:hover{background:#eaf1ff;border-color:#8eafe2}
+@media(max-width:700px){
+  .final-copy-actions{flex-direction:column;align-items:stretch}
+  .copy-button,.main-copy{width:100%;min-width:0}
+}
