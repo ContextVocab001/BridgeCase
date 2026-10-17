@@ -104,4 +104,17 @@ OUTPUT QUALITY
 - Localize generic labels such as Guest Name, Stay Dates, Property, Guest Statement, Payment Method, and Disputed Amount into ${ui}. Do not localize the underlying proper names or identifiers.
 - The draft must include only the available identifiers needed to process the case. Do not automatically include card last-four digits when name, dates, and reservation/folio/order number are sufficient.
 - Missing information may block only identification of the responsible organization/facility, transaction/reservation, issue, or requested outcome.
-- Keep the draft concise, professional, and easy for the recipient to process in one pass.`;const user=`SHAPE:${schema}\nMESSAGE:\n${str(i.originalMessage)||'(none)'}\nUSER REQUEST:\n${str(i.userRequest)||'(none)'}\nOCR DOCUMENT TEXT:\n${str(i.documentText)||'(none)'}\nFILES:${JSON.stringify(i.documents||[])}\nADDITIONAL:${JSON.stringify(i.additionalInformation||{})}`;const raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user}]);const result=normalize(raw,model);if(!result.requestedOutcome||!result.draft.subject||!result.draft.body)throw new Error('Incomplete AI analysis.');res.status(200).json(result)}catch(e){console.error('analyze-case',e);res.status(502).json({error:e instanceof Error?e.message:'Analysis failed.'})}}
+- Keep the draft concise, professional, and easy for the recipient to process in one pass.`;const user=`SHAPE:${schema}\nMESSAGE:\n${str(i.originalMessage)||'(none)'}\nUSER REQUEST:\n${str(i.userRequest)||'(none)'}\nOCR DOCUMENT TEXT:\n${str(i.documentText)||'(none)'}\nFILES:${JSON.stringify(i.documents||[])}\nADDITIONAL:${JSON.stringify(i.additionalInformation||{})}`;let raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user}]);let result=normalize(raw,model);
+if(!result.requestedOutcome){
+  const repair=`The previous JSON omitted requestedOutcome. Return the complete JSON shape again. Summarize only the action explicitly requested by the user in ${ui}. Do not invent a request. If the supplied documents conflict, keep the requested action general and put the exact unresolved fact in readiness.missingFields.`
+  raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user},{role:'assistant',content:JSON.stringify(raw)},{role:'user',content:repair}],3800,0)
+  result=normalize(raw,model)
+}
+if(!result.requestedOutcome)throw new Error('AI could not identify the requested outcome. Please state what you want the company to do.')
+if(result.readiness.ready&&(!result.draft.subject||!result.draft.body)){
+  const repair=`The case is marked ready, but the draft is incomplete. Return the complete JSON shape again with a neutral subject and a complete first-person draft in ${ui}. Preserve conflicts as stated; do not silently resolve them.`
+  raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user},{role:'assistant',content:JSON.stringify(raw)},{role:'user',content:repair}],4200,0)
+  result=normalize(raw,model)
+}
+if(result.readiness.ready&&(!result.draft.subject||!result.draft.body))throw new Error('AI could not prepare the inquiry draft. Please review the requested outcome and try again.')
+res.status(200).json(result)}catch(e){console.error('analyze-case',e);res.status(502).json({error:e instanceof Error?e.message:'Analysis failed.'})}}
