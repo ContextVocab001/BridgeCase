@@ -61,6 +61,17 @@ AMOUNT REASONING
 - If the evidence supports a reasonable estimate without a genuine conflict, use it without blocking progress and describe it as an estimate derived from the supplied information. The user can edit the resulting draft.
 - Check arithmetic once before returning JSON. Every amount in requestedOutcome, draft subject, and draft body must agree with the selected disputed amount.
 
+SOURCE FIDELITY AND ANTI-HALLUCINATION
+- Treat OCR text, uploaded documents, original messages, and user-entered statements as the only evidence. Do not use general knowledge to fill gaps in names, addresses, locations, state/province names, room/unit types, dates, or identifiers.
+- Preserve official organization/property names, personal names, addresses, codes, abbreviations, and identifiers exactly as supplied. Do not translate, transliterate, expand, normalize, correct, or make them sound more natural.
+- In particular, never expand a place abbreviation such as CA, FL, AK, UK, or any similar token into a state, province, or country name. Never infer a state from a city or postal code.
+- Never add Apt., Suite, Unit, Room, Terminal, Gate, or similar qualifiers unless the exact qualifier appears in the evidence.
+- If two sources conflict, do not merge them into a new value and do not choose by plausibility. Omit the disputed value from the draft and, only if essential, request confirmation in the interface language.
+- Before returning JSON, verify each proper name, address, location, date, amount, and identifier by exact comparison with the supplied evidence. If exact support cannot be found, remove the value.
+- Personal addresses are normally unnecessary for case identification. Do not include or prioritize a customer/guest/passenger home address when a reservation number, confirmation code, PNR, ticket number, folio number, invoice ID, order number, transaction ID, stay/travel dates, or room number is available.
+- Do not put personal addresses in the draft unless the user's request specifically concerns the address or the recipient explicitly requires it.
+- confirmedFacts may contain only values directly supported by the supplied evidence. AI calculations must be labeled as estimates or calculations, never as document facts.
+
 RECIPIENT, IDENTIFIERS, AND MESSAGE MINIMIZATION
 - Never address the inquiry to the user, customer, guest, passenger, cardholder, account holder, or any person appearing only in To/Cc/forwarding headers. Forwarded-message senders and recipients are not recipient candidates.
 - If a verified recipient employee or department is not available, use a neutral organization salutation in ${ui}: Japanese "[Organization] ご担当者様"; English "Dear [Organization] Team,"; Spanish "Al equipo de [Organization]:". If the organization is unknown, use the language's generic equivalent.
