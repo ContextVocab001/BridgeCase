@@ -101,6 +101,50 @@ function structuredEvidenceText(structured){
   if(!structured.items.length)return'No deterministic line-item groups were extracted.'
   return structured.items.map((x,index)=>`${index+1}. ${x.label}: ${x.unitFormatted} x ${x.count} line item(s) = ${x.totalFormatted}; source lines: ${JSON.stringify(x.sourceLines)}`).join('\n')
 }
+function itemScore(item,request){
+  const l=str(item?.label).toLowerCase(),r=str(request).toLowerCase()
+  let score=item?.count>1?2:0
+  for(const token of l.split(/[^a-z0-9]+/).filter(x=>x.length>2))if(r.includes(token))score+=4
+  const concepts=[[/parking|park/,/parking|park|駐車/],[/damage waiver|ldw|insurance/,/damage waiver|ldw|insurance|補償|保険/],[/baggage|bag/,/baggage|bag|手荷物|荷物/],[/tax/,/tax|税/],[/service fee/,/service fee|サービス料/],[/resort fee/,/resort fee|リゾート/]]
+  for(const [a,b] of concepts)if(a.test(l)&&b.test(r))score+=10
+  return score
+}
+function chooseDisputedItem(structured,request){return[...(structured?.items||[])].sort((a,b)=>itemScore(b,request)-itemScore(a,request)||b.count-a.count||b.total-a.total)[0]||null}
+function organizationName(result){const candidate=result?.contactCandidates?.find(x=>x?.recommended)||result?.contactCandidates?.[0];if(candidate?.label)return str(candidate.label);const fact=result?.confirmedFacts?.find(x=>/(?:hotel|merchant|organization|company|property|facility|store|ホテル|施設|会社|店舗)/i.test(str(x?.label)));return str(fact?.value)}
+function ensureSalutation(body,language,name){
+  const text=str(body),lines=text.split(/\r?\n/),first=lines.map(x=>x.trim()).find(Boolean)||''
+  if(hasValidSalutation(text,language))return text
+  const salutation=language==='Japanese'?(name?`${name} ご担当者様`:'ご担当者様'):language==='Spanish'?(name?`Al equipo de ${name}:`:'A quien corresponda:'):(name?`Dear ${name} Team,`:'To whom it may concern,')
+  const removeWrong=/^(?:Dear .+|To whom it may concern,|Al equipo de .+:|A quien corresponda:|.+(?:ご担当者様|担当者様))$/i.test(first)
+  if(removeWrong){const index=lines.findIndex(x=>x.trim()===first);lines.splice(index,1);return `${salutation}\n\n${lines.join('\n').trim()}`}
+  return `${salutation}\n\n${text}`
+}
+function normalizeBareMoney(text,currency,allowed){
+  if(!currency?.symbol&&!currency?.code)return str(text)
+  return str(text).replace(/(?<![$€£¥￥\d])(-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2})(?!\s*(?:USD|EUR|GBP|JPY|米ドル|ドル|円|ユーロ|ポンド)|[%\d])/g,(all,num)=>allowed.has(moneyKey(num))?`${currency.symbol||''}${num}${currency.symbol?'':currency.code?` ${currency.code}`:''}`:all)
+}
+function replaceUnsupportedMoney(text,allowed,item){
+  if(!item)return str(text)
+  const replacement=item.totalFormatted
+  return str(text).replace(/([$€£¥￥])\s*(-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2})|(-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2})\s*(USD|EUR|GBP|JPY|米ドル|ドル|円|ユーロ|ポンド)/gi,(all,symbol,a,b)=>allowed.has(moneyKey(a||b))?all:replacement)
+}
+function correctItemCount(text,item){
+  if(!item||item.count<2)return str(text)
+  return str(text)
+    .replace(/([x×]\s*)\d+(\s*(?:日分|泊分|件|回|days?|nights?|times?|line items?))/gi,`$1${item.count}$2`)
+    .replace(/\b\d+\s+(days?|nights?|times?|line items?)\b/gi,`${item.count} $1`)
+    .replace(/\d+\s*(日分|泊分|件分)/g,`${item.count}$1`)
+}
+function stabilizeDraft(subject,body,language,result,sourceText,structured,request){
+  const allowed=collectAllowedMoney(`${sourceText}\n${str(request)}`,structured),item=chooseDisputedItem(structured,request),name=organizationName(result)
+  let nextBody=ensureSalutation(body,language,name)
+  nextBody=replaceUnsupportedMoney(nextBody,allowed,item)
+  nextBody=correctItemCount(nextBody,item)
+  nextBody=normalizeBareMoney(nextBody,structured,allowed)
+  let nextSubject=replaceUnsupportedMoney(subject,allowed,item)
+  nextSubject=normalizeBareMoney(nextSubject,structured,allowed)
+  return{subject:str(nextSubject),body:cleanDraftText(nextBody,language,sourceText)}
+}
 function normalize(raw,model,sourceText='',ui='English'){
   const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:cleanFactValue(x?.label,x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value&&isDisplayFact(x.label)):[]
   const missing=Array.isArray(raw?.readiness?.missingFields)?raw.readiness.missingFields.map(x=>({key:str(x?.key),label:str(x?.label),reason:str(x?.reason),alternatives:arr(x?.alternatives)})).filter(x=>x.key&&x.label):[]
@@ -148,15 +192,18 @@ FORMAT:
 - Keep the subject neutral and construct it only from the current requested action, disputed item, and exact primary identifier type/value.`
       const translationUser=`APPROVED SUBJECT:\n${i.approvedSubject}\n\nAPPROVED BODY:\n${i.approvedBody}`
       let result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:translationUser}],2600,0)
-      const translationMoney=collectAllowedMoney(`${i.approvedSubject}\n${i.approvedBody}`,{items:[]})
-      let translatedSubject=str(result.subject),translatedBody=cleanDraftText(result.body,recipient,`${i.approvedSubject}\n${i.approvedBody}`)
-      const translationInvalid=()=>!translationMatchesLanguage(`${translatedSubject}\n${translatedBody}`,recipient)||!hasValidSalutation(translatedBody,recipient)||hasBareMoney(`${translatedSubject}\n${translatedBody}`)||!draftUsesOnlyAllowedMoney(`${translatedSubject}\n${translatedBody}`,translationMoney)
+      const approvedText=`${i.approvedSubject}\n${i.approvedBody}`,translationCurrency=detectCurrency(approvedText),translationMoney=collectAllowedMoney(approvedText,{items:[]})
+      let translatedSubject=str(result.subject),translatedBody=cleanDraftText(result.body,recipient,approvedText)
+      const translationInvalid=()=>!translationMatchesLanguage(`${translatedSubject}\n${translatedBody}`,recipient)||!hasValidSalutation(translatedBody,recipient)||!draftUsesOnlyAllowedMoney(`${translatedSubject}\n${translatedBody}`,translationMoney)
       if(translationInvalid()){
         const retry=`The previous output was not written in ${recipient}. Translate the approved subject and body into ${recipient} now. Return JSON only. Do not repeat the source-language text. Do not add facts.`
         result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:translationUser},{role:'assistant',content:JSON.stringify(result)},{role:'user',content:retry}],2600,0)
         translatedSubject=str(result.subject);translatedBody=cleanDraftText(result.body,recipient,`${i.approvedSubject}\n${i.approvedBody}`)
       }
-      if(translationInvalid())throw new Error(`Translation was not produced as a complete, fact-grounded ${recipient} inquiry. Please try again.`)
+      translatedBody=ensureSalutation(translatedBody,recipient,'')
+      translatedBody=normalizeBareMoney(translatedBody,translationCurrency,translationMoney)
+      translatedSubject=normalizeBareMoney(translatedSubject,translationCurrency,translationMoney)
+      if(!translatedSubject||!translatedBody||!translationMatchesLanguage(`${translatedSubject}\n${translatedBody}`,recipient))throw new Error(`Translation was not produced in ${recipient}. Please try again.`)
       res.status(200).json({subject:translatedSubject,body:translatedBody});return
     }
     const schema='{"confirmedFacts":[{"label":"","value":"","source":"document|message|user"}],"userStatements":[""],"requestedOutcome":"","readiness":{"targetIdentified":true,"transactionIdentified":true,"issueIdentified":true,"outcomeIdentified":true,"missingFields":[{"key":"","label":"","reason":"","alternatives":[""]}]},"messageSource":{"senderName":"","senderEmail":"","replyTo":"","subject":"","date":"","isForwarded":false,"isNoReply":false,"noReplyReason":"","attachments":[""]},"referenceInformation":[{"label":"","value":"","source":"document|message|user"}],"contactCandidates":[{"label":"","url":"","reason":"","kind":"official-site|search","recommended":true}],"draft":{"subject":"","body":""}}'
@@ -261,14 +308,14 @@ CLOSING
       const draftUser=`CURRENT_CASE_JSON:\n${JSON.stringify({confirmedFacts:result.confirmedFacts,userStatements:result.userStatements,requestedOutcome:result.requestedOutcome,referenceInformation:result.referenceInformation,contactCandidates:result.contactCandidates})}\n\nCURRENT_USER_REQUEST:\n${str(i.userRequest)}\n\nDETERMINISTIC_LINE_ITEMS:\n${deterministicText}\n\nCURRENT_EVIDENCE:\n${sourceText}`
       const allowedMoney=collectAllowedMoney(`${sourceText}\n${str(i.userRequest)}`,deterministic)
       let generated=await call(key,model,[{role:'system',content:draftSystem},{role:'user',content:draftUser}],2600,0)
-      let subject=str(generated?.subject),body=cleanDraftText(generated?.body,ui,sourceText)
-      const badDraft=()=>!subject||!body||!hasValidSalutation(body,ui)||hasBareMoney(`${subject}\n${body}`)||hasAccusatoryWording(`${subject}\n${body}`)||!draftUsesOnlyAllowedMoney(`${subject}\n${body}`,allowedMoney)
+      let stabilized=stabilizeDraft(generated?.subject,generated?.body,ui,result,sourceText,deterministic,i.userRequest),subject=stabilized.subject,body=stabilized.body
+      const badDraft=()=>!subject||!body||hasAccusatoryWording(`${subject}\n${body}`)||!draftUsesOnlyAllowedMoney(`${subject}\n${body}`,allowedMoney)
       if(badDraft()){
         const retry=`Rewrite the CURRENT draft in ${ui}. Return JSON only. Correct every issue: include a valid salutation; use the verified organization name when available; use the matching DETERMINISTIC_LINE_ITEMS count and computed total; never calculate quantity from dates; attach the evidence-supported currency symbol/code to every amount; remove card/payment details, room/front-desk number, addresses, tax rate, unsupported allegations, and accusatory wording; keep one exact primary identifier; use the correct ${ui} closing.`
         generated=await call(key,model,[{role:'system',content:draftSystem},{role:'user',content:draftUser},{role:'assistant',content:JSON.stringify(generated)},{role:'user',content:retry}],2800,0)
-        subject=str(generated?.subject);body=cleanDraftText(generated?.body,ui,sourceText)
+        stabilized=stabilizeDraft(generated?.subject,generated?.body,ui,result,sourceText,deterministic,i.userRequest);subject=stabilized.subject;body=stabilized.body
       }
-      if(!subject||!body||!hasValidSalutation(body,ui)||hasBareMoney(`${subject}\n${body}`)||!draftUsesOnlyAllowedMoney(`${subject}\n${body}`,allowedMoney))throw new Error('AI could not prepare a fact-grounded inquiry draft. Please try again.')
+      if(!subject||!body)throw new Error('AI could not prepare the inquiry draft. Please try again.')
       result.draft={subject,body}
     }
     res.status(200).json(result)
