@@ -7,6 +7,8 @@ function parse(content){const raw=typeof content==='string'?content:Array.isArra
 async function call(key,model,messages,max_tokens=3800,temperature=.1){const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}if(!r.ok)throw new Error(data?.error?.message||`Nebius ${r.status}`);if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.');return parse(data?.choices?.[0]?.message?.content)}
 function search(label){return `https://www.google.com/search?q=${encodeURIComponent(`${label} official website contact`)}`}
 function urlsIn(text){return new Set((str(text).match(/https?:\/\/[^\s<>"')\]]+/gi)||[]).map(x=>x.replace(/[.,;:!?]+$/,'')))}
+function isUnrelatedIntermediary(label){return /(?:clover|stripe|square|adyen|braintree|worldpay|fiserv|first data|toast|lightspeed|shopify payments|visa|mastercard|american express|amex|discover|card issuer|payment processor|payment gateway|pos support|決済代行|決済処理|カード会社|カードブランド|銀行|pos事業者|posサポート)/i.test(str(label))}
+function cleanDraftText(value){return str(value).split(/\r?\n/).filter(line=>!/^\s*(?:\[?your name\]?|\[?your contact information\]?|name\s*[:：]\s*|contact information\s*[:：]\s*)\s*$/i.test(line)).join('\n').replace(/\n{3,}/g,'\n\n').trim()}
 function normalize(raw,model,sourceText=''){
   const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[]
   const missing=Array.isArray(raw?.readiness?.missingFields)?raw.readiness.missingFields.map(x=>({key:str(x?.key),label:str(x?.label),reason:str(x?.reason),alternatives:arr(x?.alternatives)})).filter(x=>x.key&&x.label):[]
@@ -15,14 +17,14 @@ function normalize(raw,model,sourceText=''){
   const seen=new Set()
   const contacts=Array.isArray(raw?.contactCandidates)?raw.contactCandidates.map(x=>{
     const label=str(x?.label),proposed=str(x?.url).replace(/[.,;:!?]+$/,'')
-    if(!label||seen.has(label.toLowerCase()))return null
+    if(!label||seen.has(label.toLowerCase())||isUnrelatedIntermediary(label))return null
     seen.add(label.toLowerCase())
     const directlySupplied=suppliedUrls.has(proposed)&&/^https:\/\//i.test(proposed)&&!/google\.|bing\./i.test(proposed)
     return{label,url:directlySupplied?proposed:search(label),reason:str(x?.reason),kind:directlySupplied?'official-site':'search',recommended:Boolean(x?.recommended)}
   }).filter(Boolean).slice(0,3):[]
   const m=raw?.messageSource||{}
   const coreReady=Boolean(raw?.readiness?.targetIdentified&&raw?.readiness?.transactionIdentified&&raw?.readiness?.issueIdentified&&raw?.readiness?.outcomeIdentified)
-  return{confirmedFacts:facts,userStatements:arr(raw?.userStatements),requestedOutcome:str(raw?.requestedOutcome),readiness:{ready:coreReady,targetIdentified:Boolean(raw?.readiness?.targetIdentified),transactionIdentified:Boolean(raw?.readiness?.transactionIdentified),issueIdentified:Boolean(raw?.readiness?.issueIdentified),outcomeIdentified:Boolean(raw?.readiness?.outcomeIdentified),missingFields:coreReady?[]:missing},messageSource:{senderName:str(m.senderName),senderEmail:str(m.senderEmail),replyTo:str(m.replyTo),subject:str(m.subject),date:str(m.date),isForwarded:Boolean(m.isForwarded),isNoReply:Boolean(m.isNoReply),noReplyReason:str(m.noReplyReason),attachments:arr(m.attachments)},referenceInformation:info,contactCandidates:contacts,draft:{subject:str(raw?.draft?.subject),body:str(raw?.draft?.body)},meta:{mode:'nebius',model}}
+  return{confirmedFacts:facts,userStatements:arr(raw?.userStatements),requestedOutcome:str(raw?.requestedOutcome),readiness:{ready:coreReady,targetIdentified:Boolean(raw?.readiness?.targetIdentified),transactionIdentified:Boolean(raw?.readiness?.transactionIdentified),issueIdentified:Boolean(raw?.readiness?.issueIdentified),outcomeIdentified:Boolean(raw?.readiness?.outcomeIdentified),missingFields:coreReady?[]:missing},messageSource:{senderName:str(m.senderName),senderEmail:str(m.senderEmail),replyTo:str(m.replyTo),subject:str(m.subject),date:str(m.date),isForwarded:Boolean(m.isForwarded),isNoReply:Boolean(m.isNoReply),noReplyReason:str(m.noReplyReason),attachments:arr(m.attachments)},referenceInformation:info,contactCandidates:contacts,draft:{subject:str(raw?.draft?.subject),body:cleanDraftText(raw?.draft?.body)},meta:{mode:'nebius',model}}
 }
 export const config={maxDuration:60}
 export default async function handler(req,res){
@@ -43,9 +45,10 @@ CONTENT:
 FORMAT:
 - Produce a complete, send-ready message with exactly one salutation and one closing/signature block.
 - Never address the message to the customer, guest, passenger, renter, or account holder.
-- English: "Dear [Organization] Team," or "To whom it may concern,"; then the body; "Thank you for your assistance."; "Best regards,"; sender name.
-- Japanese: "[Organization] ご担当者様" or "ご担当者様"; polite closing; sender name.
-- Spanish: "Al equipo de [Organización]:" or "A quien corresponda:"; "Gracias por su ayuda."; "Atentamente,"; sender name.
+- English: "Dear [Organization] Team," or "To whom it may concern,"; then the body; "Thank you for your assistance."; "Best regards,". Add the sender's actual name only when it is explicitly verified in the approved text. Never output placeholders such as [Your Name] or [Your Contact Information].
+- Japanese: "[Organization] ご担当者様" or "ご担当者様"; end with a natural polite request. Add an actual sender name only when it is explicitly verified; never output a name/contact placeholder.
+- Spanish: "Al equipo de [Organización]:" or "A quien corresponda:"; "Gracias por su ayuda."; "Atentamente,". Add the actual sender name only when it is explicitly verified; never output placeholders.
+- Email addresses and contact details normally belong in the email sender information or dedicated form fields, not in the message body or signature.
 - Keep the subject neutral and construct it only from the current requested action, disputed item, and exact primary identifier type/value.`
       const result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:`APPROVED SUBJECT:\n${i.approvedSubject}\n\nAPPROVED BODY:\n${i.approvedBody}`}],2600,0)
       res.status(200).json({subject:str(result.subject),body:str(result.body)});return
@@ -82,14 +85,20 @@ MESSAGE SOURCE
 
 CONTACT CANDIDATES - SIMPLE SCOPE
 - Teltruva prepares the inquiry; it does not crawl websites, auto-select a recipient, or claim that a contact route has been verified.
-- Return 1-3 organization/property candidates only. Prefer the most specific verified facility, branch, seller, or provider from the current evidence; a parent brand is secondary.
+- Return only organizations that can reasonably investigate, correct, or refund the issue described by the user. Prefer the actual merchant, hotel, airline, rental company, seller, subscription provider, or responsible parent brand.
+- A company merely printed on a receipt is not automatically responsible. Exclude payment processors, POS/receipt-system providers, payment gateways, card networks, card issuers, banks, booking-system vendors, and technology providers unless the user's issue specifically concerns that provider's own service and that provider can perform the requested action.
+- For a hotel charge or tax question, return the hotel/property or its responsible brand, not Clover or another card/POS processor.
+- Return 1-3 responsible organization/property candidates only. Prefer the most specific verified facility, branch, seller, or provider from the current evidence; a parent brand is secondary.
 - Do not return phone, live chat, social media, review sites, or third-party directories.
 - Do not invent a URL or email address. Copy a URL only when it appears verbatim in the supplied message/document; otherwise leave url empty so the app creates a Google search link.
 - If several similarly named organizations/properties are plausible, return separate candidates and explain exactly what matches or remains uncertain.
 - Candidate reasons must tell the user to confirm the official site, facility name, and location. Do not imply that the displayed route is confirmed.
 
 DRAFT
-- Write a concise, complete, first-person inquiry in ${ui} with one appropriate salutation, the issue, exact requested action, and a polite closing/signature.
+- Write a concise, complete, first-person inquiry in ${ui} with one appropriate salutation, the issue, exact requested action, and a polite closing.
+- Never output unfinished placeholders such as [Your Name], [Your Contact Information], Name:, Contact Information:, or localized equivalents.
+- Include the sender's actual name only when it is explicitly verified in the current evidence or user input. Otherwise end cleanly after the closing. Do not ask for a name merely to complete the signature.
+- Do not repeat an email address, phone number, or other contact details in the body/signature when the email sender or inquiry form already provides them.
 - Keep the subject neutral: requested action + disputed item + exact primary identifier type/value. Avoid accusatory wording unless explicitly requested.
 - Never rename identifier types.
 - Do not add requests the user did not make.
