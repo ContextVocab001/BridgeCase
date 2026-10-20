@@ -191,11 +191,6 @@ function App() {
     ja: { target: '相手先', transaction: '取引情報', issue: '問題内容', request: '希望する対応' },
     es: { target: 'Destinatario', transaction: 'Transacción', issue: 'Problema', request: 'Solución solicitada' },
   })
-  const isUsefulReference = (label: string) => {
-    const normalized = label.toLowerCase()
-    const excluded = ['card', 'mastercard', 'visa', 'amex', 'expiry', 'expiration', 'approval code', 'aid', 'avs', 'cvv', 'cvm', 'merchant', 'location', 'address', 'カード', '有効期限', '承認コード', '加盟店', '所在地', 'tarjeta', 'vencimiento', 'comercio', 'ubicación']
-    return !excluded.some((term) => normalized.includes(term))
-  }
   const contactActionLabel = (kind: string) => {
     if (kind === 'search') return ui({ en: 'Search official site and contact route', ja: '公式サイト・問い合わせ先を検索', es: 'Buscar sitio y contacto oficiales' })
     return ui({ en: 'Review official site', ja: '公式サイトを確認', es: 'Revisar sitio oficial' })
