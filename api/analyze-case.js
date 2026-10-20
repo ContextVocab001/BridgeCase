@@ -8,9 +8,37 @@ async function call(key,model,messages,max_tokens=3800,temperature=.1){const r=a
 function search(label){return `https://www.google.com/search?q=${encodeURIComponent(`${label} official website contact`)}`}
 function urlsIn(text){return new Set((str(text).match(/https?:\/\/[^\s<>"')\]]+/gi)||[]).map(x=>x.replace(/[.,;:!?]+$/,'')))}
 function isUnrelatedIntermediary(label){return /(?:clover|stripe|square|adyen|braintree|worldpay|fiserv|first data|toast|lightspeed|shopify payments|visa|mastercard|american express|amex|discover|card issuer|payment processor|payment gateway|pos support|決済代行|決済処理|カード会社|カードブランド|銀行|pos事業者|posサポート)/i.test(str(label))}
-function cleanDraftText(value){return str(value).split(/\r?\n/).filter(line=>!/^\s*(?:\[?your name\]?|\[?your contact information\]?|name\s*[:：]\s*|contact information\s*[:：]\s*)\s*$/i.test(line)).join('\n').replace(/\n{3,}/g,'\n\n').trim()}
+function cleanDraftText(value){
+  const lines=str(value).split(/\r?\n/)
+  const out=[]
+  let closed=false
+  for(const rawLine of lines){
+    const line=rawLine.trimEnd(),t=line.trim()
+    if(!t){if(out.length&&out[out.length-1]!=='')out.push('');continue}
+    if(/^\s*(?:\[?your name\]?|\[?your contact information\]?|name\s*[:：]?|contact information\s*[:：]?|taro yamada)\s*$/i.test(t))continue
+    if(/^\s*[【\[]?(?:取引詳細|transaction details)[】\]]?\s*$/i.test(t))continue
+    if(/^\s*[-•]\s*/.test(t)){
+      const keepIdentifier=/(?:reference\s*(?:id|number)?|reservation\s*(?:id|number)?|confirmation\s*(?:code|number)?|folio\s*(?:number)?|pnr|ticket\s*(?:number)?|rental agreement\s*(?:number)?|order\s*(?:id|number)?|invoice\s*(?:id|number)?|参照番号|予約番号|確認番号|フォリオ番号|航空券番号|レンタル契約番号|注文番号|請求書番号)/i.test(t)
+      if(!keepIdentifier)continue
+    }
+    if(closed)continue
+    out.push(line)
+    if(/^(?:best regards,?|sincerely,?|yours sincerely,?|atentamente,?)$/i.test(t))closed=true
+  }
+  return out.join('\n').replace(/\n{3,}/g,'\n\n').trim()
+}
+function isDisplayFact(label){
+  const x=str(label)
+  if(/(?:store|merchant|property|facility|location|address|payment method|card|brand|auth|authorization|mid|aid|avs|cvv|cvm|subtotal|tax rate|installment|店舗|店名|施設名|取引先|場所|住所|支払方法|カード|ブランド|認証|小計|税率|支払回数)/i.test(x))return false
+  return true
+}
+function cleanFactValue(label,value){
+  const l=str(label),v=str(value)
+  if(/(?:date and time|transaction date|payment date|取引日時|支払日時)/i.test(l))return v.replace(/([0-9]{4}[-年][0-9]{1,2}[-月][0-9]{1,2}日?)(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?/,'$1')
+  return v
+}
 function normalize(raw,model,sourceText=''){
-  const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[]
+  const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:cleanFactValue(x?.label,x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value&&isDisplayFact(x.label)):[]
   const missing=Array.isArray(raw?.readiness?.missingFields)?raw.readiness.missingFields.map(x=>({key:str(x?.key),label:str(x?.label),reason:str(x?.reason),alternatives:arr(x?.alternatives)})).filter(x=>x.key&&x.label):[]
   const info=Array.isArray(raw?.referenceInformation)?raw.referenceInformation.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[]
   const suppliedUrls=urlsIn(sourceText)
@@ -49,6 +77,8 @@ FORMAT:
 - Japanese: "[Organization] ご担当者様" or "ご担当者様"; end with a natural polite request. Add an actual sender name only when it is explicitly verified; never output a name/contact placeholder.
 - Spanish: "Al equipo de [Organización]:" or "A quien corresponda:"; "Gracias por su ayuda."; "Atentamente,". Add the actual sender name only when it is explicitly verified; never output placeholders.
 - Email addresses and contact details normally belong in the email sender information or dedicated form fields, not in the message body or signature.
+- Do not add any personal name after the closing. End at "Best regards," / "Atentamente," unless the approved body already contains an intentional signed name.
+- Do not create a Transaction Details list. Preserve the concise structure of the approved text and include only the primary identifier needed to locate the case.
 - Keep the subject neutral and construct it only from the current requested action, disputed item, and exact primary identifier type/value.`
       const result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:`APPROVED SUBJECT:\n${i.approvedSubject}\n\nAPPROVED BODY:\n${i.approvedBody}`}],2600,0)
       res.status(200).json({subject:str(result.subject),body:cleanDraftText(result.body)});return
@@ -76,6 +106,9 @@ CASE ORGANIZATION
 - Prefer identifiers by context: hotel reservation/folio; airline PNR/ticket; rental reservation/rental agreement; retail order/invoice; subscription account/invoice.
 - When a strong identifier exists, omit card brand/last-four and lower-priority identifiers from the draft.
 - Include only the minimum identifiers the recipient needs to locate the case.
+- In confirmedFacts, show only user-relevant case facts: the exact primary identifier, the disputed item/amount, the total when useful, and a date only when useful. Do not show merchant/store/property name, address, payment method, card brand/last four, exact time, authorization codes, MID/AID/AVS/CVV/CVM, subtotal, tax rate, or installment count. Organization/property identity belongs in the contact candidate and salutation, not as a transaction-detail card.
+- Never split one OCR line into invented sibling fields. If the receipt contains one line labeled "Tax 2" with a rate and amount, represent it as one Tax 2 fact. Never invent Tax 1.
+- A label such as "Tax 2" does not by itself prove duplicate taxation. Describe it neutrally, ask what the charge is and how it was calculated, and request a refund only if it was charged in error.
 - For daily charges, calculate unit amount x relevant quantity and use the total when supported. If totals genuinely conflict, do not choose silently.
 
 MESSAGE SOURCE
@@ -99,7 +132,10 @@ DRAFT
 - Never output unfinished placeholders such as [Your Name], [Your Contact Information], Name:, Contact Information:, or localized equivalents.
 - Include the sender's actual name only when it is explicitly verified in the current evidence or user input. Otherwise end cleanly after the closing. Do not ask for a name merely to complete the signature.
 - Do not repeat an email address, phone number, or other contact details in the body/signature when the email sender or inquiry form already provides them.
-- Keep the subject neutral: requested action + disputed item + exact primary identifier type/value. Avoid accusatory wording unless explicitly requested.
+- Do not create a Transaction Details section or dump OCR fields into the draft. The draft should normally contain: salutation; 1-2 short paragraphs explaining the disputed item; the requested review/refund; one exact primary identifier; polite closing. Do not include store/property name, address, card or payment method, exact time, authorization codes, MID, subtotal, tax rate, or total unless the total itself is the disputed issue.
+- If a receipt says "Tax 2", do not call it duplicate tax unless separate evidence proves two tax charges. Ask for the meaning and calculation basis of Tax 2, and request a refund if it was charged in error.
+- Never invent a sender name. End the English draft at "Best regards," with nothing after it.
+- Keep the subject neutral: requested action + disputed item + exact primary identifier type/value. Preserve the exact identifier label from evidence, for example Reference ID must not become Transaction ID. Avoid accusatory wording unless explicitly requested.
 - Never rename identifier types.
 - Do not add requests the user did not make.
 
