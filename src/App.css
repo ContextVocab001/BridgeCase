@@ -684,25 +684,39 @@
 }
 
 .unified-message-upload .upload-icon {
+  position: relative !important;
   width: 58px !important;
   height: 58px !important;
+  min-width: 58px !important;
+  min-height: 58px !important;
   margin: 0 auto 2px !important;
+  padding: 0 !important;
   border-radius: 50% !important;
-  display: grid !important;
-  place-items: center !important;
+  display: block !important;
+  overflow: hidden !important;
   background: linear-gradient(135deg, #2f6df6, #5c3ee8) !important;
   color: transparent !important;
   font-size: 0 !important;
-  line-height: 1 !important;
+  line-height: 0 !important;
   box-shadow: 0 8px 18px rgba(47, 99, 245, 0.2) !important;
 }
 
 .unified-message-upload .upload-icon::after {
   content: "\2191";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -52%);
+  width: 24px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #ffffff;
+  font-family: Arial, sans-serif;
   font-size: 27px;
-  font-weight: 500;
-  line-height: 1;
+  font-weight: 400;
+  line-height: 30px;
 }
 
 .unified-message-upload .upload-main strong {
@@ -710,7 +724,7 @@
   width: 100% !important;
   margin: 0 !important;
   color: #07172e !important;
-  font-size: 18px !important;
+  font-size: 20px !important;
   font-weight: 800 !important;
   line-height: 1.35 !important;
   text-align: center !important;
@@ -769,6 +783,6 @@
   }
 
   .unified-message-upload .upload-main strong {
-    font-size: 16px !important;
+    font-size: 18px !important;
   }
 }
