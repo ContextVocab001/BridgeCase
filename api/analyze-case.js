@@ -11,6 +11,9 @@ function isUnrelatedIntermediary(label){return /(?:clover|stripe|square|adyen|br
 function containsJapanese(value){return /[\u3040-\u30ff\u3400-\u9fff]/.test(str(value))}
 function mostlyJapanese(value){const t=str(value),jp=(t.match(/[\u3040-\u30ff\u3400-\u9fff]/g)||[]).length,latin=(t.match(/[A-Za-z]/g)||[]).length;return jp>0&&jp>=latin}
 function translationMatchesLanguage(value,target){const t=str(value);if(!t)return false;if(target==='Japanese')return containsJapanese(t);if(target==='English'||target==='Spanish')return !mostlyJapanese(t)&&/[A-Za-z]/.test(t);return true}
+function hasBareMoney(value){return /(?:parking|charge|fee|tax|refund|total|amount|料金|税|返金|合計)[^\n]{0,40}(?<![$€£¥\d])\d+(?:\.\d{2})(?!\s*(?:USD|EUR|GBP|JPY|米ドル|ドル|円|ユーロ|ポンド))/i.test(str(value))}
+function hasValidSalutation(value,language){const first=str(value).split(/\r?\n/).map(x=>x.trim()).find(Boolean)||'';if(language==='Japanese')return /(?:ご担当者様|担当者様)$/.test(first);if(language==='English')return /^(?:Dear .+|To whom it may concern),$/i.test(first);if(language==='Spanish')return /^(?:Al equipo de .+|A quien corresponda):$/i.test(first);return true}
+function hasAccusatoryWording(value){return /(?:不当請求|不正請求|詐欺|unauthorized|unfairly|fraudulent|improper charge|double taxation|二重課税|二重請求)/i.test(str(value))}
 function sentenceFilter(value,sourceText=''){
   let text=str(value)
   const source=str(sourceText)
@@ -133,7 +136,7 @@ CASE ORGANIZATION
 - In confirmedFacts, include the verified responsible organization/property name so the user can confirm the correct counterparty. Also include the exact primary identifier, the disputed item/amount, the total when useful, and a date only when useful. Do not show address, payment method, card brand/last four, exact time, authorization codes, MID/AID/AVS/CVV/CVM, subtotal, tax rate, or installment count.
 - Never split one OCR line into invented sibling fields. If the receipt contains one line labeled "Tax 2" with a rate and amount, represent it as one Tax 2 fact. Never invent Tax 1.
 - A label such as "Tax 2" does not by itself prove duplicate taxation. Describe it neutrally, ask what the charge is and how it was calculated, and request a refund only if it was charged in error.
-- For daily charges, calculate unit amount x relevant quantity and use the total when supported. If totals genuinely conflict, do not choose silently.
+- For daily charges, calculate unit amount x relevant quantity and use the total when supported. For hotel charges, nights equal checkout date minus check-in date. Include the unit rate and calculated disputed total as separate, clearly labeled facts when supported. Every monetary fact must include the evidence-supported currency symbol or ISO code. Never output a bare monetary amount. If totals genuinely conflict, do not choose silently.
 
 MESSAGE SOURCE
 - Detect forwarded messages and use the innermost original business message.
@@ -172,30 +175,44 @@ OUTPUT QUALITY
     let result=normalize(raw,model,sourceText,ui)
     if(!result.requestedOutcome){const repair=`Return the complete JSON shape again. requestedOutcome is missing. Summarize only the action explicitly requested by the CURRENT user in ${ui}.`;raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user},{role:'assistant',content:JSON.stringify(raw)},{role:'user',content:repair}],4000,0);result=normalize(raw,model,sourceText,ui)}
     if(!result.requestedOutcome)throw new Error('AI could not identify the requested outcome. Please state what you want the company to do.')
-    if(result.readiness.ready&&(!result.draft.subject||!result.draft.body)){
+    if(result.readiness.ready){
       const draftSystem=`Write only the CURRENT inquiry draft in ${ui}. Return JSON only as {"subject":"","body":""}.
+SOURCE LIMITS
 - Use only CURRENT_CASE_JSON, CURRENT_USER_REQUEST, and CURRENT_EVIDENCE below.
-- Do not invent what the customer bought or did. Do not infer a meal, restaurant visit, hotel stay, room purchase, rental, flight, or other service unless explicitly stated.
+- Never invent what the customer bought or did. Do not infer a meal, restaurant visit, hotel stay, room purchase, rental, flight, or other service unless explicitly stated.
+- Never invent a sender name.
+CALCULATION AND CURRENCY
+- If a disputed fee is stated per day/night and the evidence supplies the number of charged days/nights or a check-in/check-out range, calculate the disputed total. For a hotel, nights equal checkout date minus check-in date. Example rule only: a five-night stay charged $10.00 per night means a disputed total of $50.00.
+- State both the unit charge and calculation when useful, for example "$10.00 per night x 5 nights = $50.00".
+- Every monetary amount must include the currency symbol or code shown in the current evidence. Never output bare amounts such as 10.00 or 50.00. Do not guess a currency that is absent from all current evidence.
+RECIPIENT AND TONE
 - Use the verified organization/property name in the salutation when available.
-- Keep the body concise: salutation; the disputed item and neutral request for explanation; refund request only if charged in error; one exact primary identifier; polite closing.
-- Do not include address, card/payment information, exact time, authorization codes, MID/AID, subtotal, tax rate, or a Transaction Details list.
-- Preserve exact identifier labels and values. Reference ID must remain Reference ID.
-- A label such as Tax 2 does not prove duplicate taxation. Ask what it is and how it was calculated.
-- Japanese: end with a natural polite Japanese request; never use Best regards, 敬具, or a sender name.
-- English: end with Thank you for your assistance. and Best regards, with no name after it.
-- Never output placeholders or invent a sender name.`
-      const draftUser=`CURRENT_CASE_JSON:
-${JSON.stringify({confirmedFacts:result.confirmedFacts,userStatements:result.userStatements,requestedOutcome:result.requestedOutcome,referenceInformation:result.referenceInformation,contactCandidates:result.contactCandidates})}
-
-CURRENT_USER_REQUEST:
-${str(i.userRequest)}
-
-CURRENT_EVIDENCE:
-${sourceText}`
-      const generated=await call(key,model,[{role:'system',content:draftSystem},{role:'user',content:draftUser}],2400,0)
-      result.draft={subject:str(generated?.subject),body:cleanDraftText(generated?.body,ui,sourceText)}
+- Japanese salutation: "[Organization] ご担当者様"; if unavailable, "ご担当者様".
+- English salutation: "Dear [Organization] Team,"; if unavailable, "To whom it may concern,".
+- Spanish salutation: "Al equipo de [Organization]:"; if unavailable, "A quien corresponda:".
+- Keep the subject and body neutral. Do not use 不当請求, 不正請求, unauthorized, unfairly, fraudulent, improper charge, double taxation, 二重課税, or 二重請求 unless separate current evidence proves that characterization or the user explicitly requests that wording.
+CONTENT
+- Keep the body concise: salutation; disputed item and supporting facts; requested review/refund; one exact primary identifier when available; polite closing.
+- Do not include address, room/front-desk number, card/payment information, exact time, authorization codes, MID/AID, subtotal, tax rate, or a Transaction Details list unless the user explicitly asks for one of those details.
+- Preserve exact identifier labels and values. Reference ID must remain Reference ID; Folio Number must remain Folio Number.
+- A label such as Tax 2 does not prove duplicate taxation. Ask what it is and how it was calculated, and request a refund only if charged in error.
+CLOSING
+- Japanese: end with a natural polite Japanese request such as "ご確認のほど、よろしくお願いいたします。" Never use Best regards, 敬具, or a sender name.
+- English: end with "Thank you for your assistance." and "Best regards," with no name after it.
+- Spanish: end with "Gracias por su ayuda." and "Atentamente," with no name after it.
+- Never output placeholders.`
+      const draftUser=`CURRENT_CASE_JSON:\n${JSON.stringify({confirmedFacts:result.confirmedFacts,userStatements:result.userStatements,requestedOutcome:result.requestedOutcome,referenceInformation:result.referenceInformation,contactCandidates:result.contactCandidates})}\n\nCURRENT_USER_REQUEST:\n${str(i.userRequest)}\n\nCURRENT_EVIDENCE:\n${sourceText}`
+      let generated=await call(key,model,[{role:'system',content:draftSystem},{role:'user',content:draftUser}],2600,0)
+      let subject=str(generated?.subject),body=cleanDraftText(generated?.body,ui,sourceText)
+      const badDraft=()=>!subject||!body||!hasValidSalutation(body,ui)||hasBareMoney(`${subject}\n${body}`)||hasAccusatoryWording(`${subject}\n${body}`)
+      if(badDraft()){
+        const retry=`Rewrite the CURRENT draft in ${ui}. Return JSON only. Correct every issue: include a valid salutation; use the verified organization name when available; calculate any per-day/per-night disputed total from current dates/quantity; attach the evidence-supported currency symbol/code to every amount; remove card/payment details, room/front-desk number, addresses, tax rate, unsupported allegations, and accusatory wording; keep one exact primary identifier; use the correct ${ui} closing.`
+        generated=await call(key,model,[{role:'system',content:draftSystem},{role:'user',content:draftUser},{role:'assistant',content:JSON.stringify(generated)},{role:'user',content:retry}],2800,0)
+        subject=str(generated?.subject);body=cleanDraftText(generated?.body,ui,sourceText)
+      }
+      if(!subject||!body||!hasValidSalutation(body,ui)||hasBareMoney(`${subject}\n${body}`))throw new Error('AI could not prepare a complete inquiry draft. Please try again.')
+      result.draft={subject,body}
     }
-    if(result.readiness.ready&&(!result.draft.subject||!result.draft.body))throw new Error('AI could not prepare the inquiry draft. Please try again.')
     res.status(200).json(result)
   }catch(e){console.error('analyze-case',e);res.status(502).json({error:e instanceof Error?e.message:'Analysis failed.'})}
 }
