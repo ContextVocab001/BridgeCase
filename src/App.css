@@ -648,3 +648,127 @@
 /* Drag-and-drop feedback for the Step 1 message uploader */
 .message-upload.dragging{border-color:#2f63f5;background:#eef4ff;box-shadow:0 0 0 4px rgba(47,99,245,.12)}
 .message-upload.dragging .upload-main b,.message-upload.dragging .upload-main strong{color:#2457de}
+
+/* Step 1 Original message upload alignment - scoped override */
+.unified-message-upload {
+  width: 100% !important;
+  min-height: 250px !important;
+  padding: 28px 24px !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  border: 2px dashed #8fb1ee !important;
+  border-radius: 16px !important;
+  background: #f5f8ff !important;
+  color: #10213e !important;
+  cursor: pointer !important;
+}
+
+.unified-message-upload:hover {
+  border-color: #4b78e6 !important;
+  background: #eef4ff !important;
+  box-shadow: 0 8px 24px rgba(47, 99, 245, 0.09) !important;
+}
+
+.unified-message-upload .upload-main {
+  width: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 9px !important;
+  margin: 0 auto !important;
+  text-align: center !important;
+}
+
+.unified-message-upload .upload-icon {
+  width: 58px !important;
+  height: 58px !important;
+  margin: 0 auto 2px !important;
+  border-radius: 50% !important;
+  display: grid !important;
+  place-items: center !important;
+  background: linear-gradient(135deg, #2f6df6, #5c3ee8) !important;
+  color: transparent !important;
+  font-size: 0 !important;
+  line-height: 1 !important;
+  box-shadow: 0 8px 18px rgba(47, 99, 245, 0.2) !important;
+}
+
+.unified-message-upload .upload-icon::after {
+  content: "\2191";
+  color: #ffffff;
+  font-size: 27px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.unified-message-upload .upload-main strong {
+  display: block !important;
+  width: 100% !important;
+  margin: 0 !important;
+  color: #07172e !important;
+  font-size: 18px !important;
+  font-weight: 800 !important;
+  line-height: 1.35 !important;
+  text-align: center !important;
+}
+
+.unified-message-upload .upload-main small {
+  display: block !important;
+  width: 100% !important;
+  margin: 0 !important;
+  color: #253956 !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  line-height: 1.4 !important;
+  text-align: center !important;
+}
+
+.unified-message-upload .upload-main em {
+  display: block !important;
+  width: 100% !important;
+  margin-top: 1px !important;
+  color: #576b88 !important;
+  font-size: 12px !important;
+  font-style: normal !important;
+  line-height: 1.4 !important;
+  text-align: center !important;
+}
+
+.unified-message-upload.dragging {
+  border-style: solid !important;
+  border-color: #2f63f5 !important;
+  background: #eaf2ff !important;
+  box-shadow: 0 0 0 5px rgba(47, 99, 245, 0.12) !important;
+}
+
+.unified-message-upload.has-files {
+  border-style: solid !important;
+  border-color: #78c6a1 !important;
+  background: #f0fbf5 !important;
+}
+
+.unified-message-upload .message-upload-success {
+  width: min(680px, 100%) !important;
+  margin: 0 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 12px !important;
+  text-align: center !important;
+}
+
+@media (max-width: 700px) {
+  .unified-message-upload {
+    min-height: 220px !important;
+    padding: 24px 16px !important;
+  }
+
+  .unified-message-upload .upload-main strong {
+    font-size: 16px !important;
+  }
+}
