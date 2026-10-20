@@ -172,8 +172,30 @@ OUTPUT QUALITY
     let result=normalize(raw,model,sourceText,ui)
     if(!result.requestedOutcome){const repair=`Return the complete JSON shape again. requestedOutcome is missing. Summarize only the action explicitly requested by the CURRENT user in ${ui}.`;raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user},{role:'assistant',content:JSON.stringify(raw)},{role:'user',content:repair}],4000,0);result=normalize(raw,model,sourceText,ui)}
     if(!result.requestedOutcome)throw new Error('AI could not identify the requested outcome. Please state what you want the company to do.')
-    if(result.readiness.ready&&(!result.draft.subject||!result.draft.body)){const repair=`Return the complete JSON shape again. The CURRENT case is ready but its draft is incomplete. Build the subject and body only from this request and evidence.`;raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user},{role:'assistant',content:JSON.stringify(raw)},{role:'user',content:repair}],4300,0);result=normalize(raw,model,sourceText,ui)}
-    if(result.readiness.ready&&(!result.draft.subject||!result.draft.body))throw new Error('AI could not prepare the inquiry draft. Please review the requested outcome and try again.')
+    if(result.readiness.ready&&(!result.draft.subject||!result.draft.body)){
+      const draftSystem=`Write only the CURRENT inquiry draft in ${ui}. Return JSON only as {"subject":"","body":""}.
+- Use only CURRENT_CASE_JSON, CURRENT_USER_REQUEST, and CURRENT_EVIDENCE below.
+- Do not invent what the customer bought or did. Do not infer a meal, restaurant visit, hotel stay, room purchase, rental, flight, or other service unless explicitly stated.
+- Use the verified organization/property name in the salutation when available.
+- Keep the body concise: salutation; the disputed item and neutral request for explanation; refund request only if charged in error; one exact primary identifier; polite closing.
+- Do not include address, card/payment information, exact time, authorization codes, MID/AID, subtotal, tax rate, or a Transaction Details list.
+- Preserve exact identifier labels and values. Reference ID must remain Reference ID.
+- A label such as Tax 2 does not prove duplicate taxation. Ask what it is and how it was calculated.
+- Japanese: end with a natural polite Japanese request; never use Best regards, 敬具, or a sender name.
+- English: end with Thank you for your assistance. and Best regards, with no name after it.
+- Never output placeholders or invent a sender name.`
+      const draftUser=`CURRENT_CASE_JSON:
+${JSON.stringify({confirmedFacts:result.confirmedFacts,userStatements:result.userStatements,requestedOutcome:result.requestedOutcome,referenceInformation:result.referenceInformation,contactCandidates:result.contactCandidates})}
+
+CURRENT_USER_REQUEST:
+${str(i.userRequest)}
+
+CURRENT_EVIDENCE:
+${sourceText}`
+      const generated=await call(key,model,[{role:'system',content:draftSystem},{role:'user',content:draftUser}],2400,0)
+      result.draft={subject:str(generated?.subject),body:cleanDraftText(generated?.body,ui,sourceText)}
+    }
+    if(result.readiness.ready&&(!result.draft.subject||!result.draft.body))throw new Error('AI could not prepare the inquiry draft. Please try again.')
     res.status(200).json(result)
   }catch(e){console.error('analyze-case',e);res.status(502).json({error:e instanceof Error?e.message:'Analysis failed.'})}
 }
