@@ -4,8 +4,107 @@ const names={en:'English',ja:'Japanese',es:'Spanish'}
 const str=x=>typeof x==='string'?x.trim():''
 const arr=x=>Array.isArray(x)?x.map(str).filter(Boolean):[]
 function parse(content){const raw=typeof content==='string'?content:Array.isArray(content)?content.map(x=>typeof x==='string'?x:x?.text||'').join('\n'):'';const text=raw.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/```(?:json)?/gi,'').trim();try{return JSON.parse(text)}catch{}const a=text.indexOf('{'),b=text.lastIndexOf('}');if(a>=0&&b>a)return JSON.parse(text.slice(a,b+1));throw new Error('Invalid AI JSON')}
-async function call(key,model,messages,max_tokens=3500){const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature:.1,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}if(!r.ok)throw new Error(data?.error?.message||`Nebius ${r.status}`);if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.');return parse(data?.choices?.[0]?.message?.content)}
-function search(label){return `https://www.google.com/search?q=${encodeURIComponent(`${label} official contact`)}`}
-function normalize(raw,model){const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[];const missing=Array.isArray(raw?.readiness?.missingFields)?raw.readiness.missingFields.map(x=>({key:str(x?.key),label:str(x?.label),reason:str(x?.reason),alternatives:arr(x?.alternatives)})).filter(x=>x.key&&x.label):[];const info=Array.isArray(raw?.referenceInformation)?raw.referenceInformation.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[];const contacts=Array.isArray(raw?.contactCandidates)?raw.contactCandidates.map(x=>{const label=str(x?.label),url=str(x?.url),official=/^https:\/\//i.test(url)&&!/google\.|bing\./i.test(url);return{label,url:official?url:search(label),reason:str(x?.reason),kind:official?(x?.kind||'official-site'):'search',recommended:Boolean(x?.recommended)}}).filter(x=>x.label):[];const m=raw?.messageSource||{};return{confirmedFacts:facts,userStatements:arr(raw?.userStatements),requestedOutcome:str(raw?.requestedOutcome),readiness:{ready:missing.length===0&&Boolean(raw?.readiness?.targetIdentified&&raw?.readiness?.transactionIdentified&&raw?.readiness?.issueIdentified&&raw?.readiness?.outcomeIdentified),targetIdentified:Boolean(raw?.readiness?.targetIdentified),transactionIdentified:Boolean(raw?.readiness?.transactionIdentified),issueIdentified:Boolean(raw?.readiness?.issueIdentified),outcomeIdentified:Boolean(raw?.readiness?.outcomeIdentified),missingFields:missing},messageSource:{senderName:str(m.senderName),senderEmail:str(m.senderEmail),replyTo:str(m.replyTo),subject:str(m.subject),date:str(m.date),isForwarded:Boolean(m.isForwarded),isNoReply:Boolean(m.isNoReply),noReplyReason:str(m.noReplyReason),attachments:arr(m.attachments)},referenceInformation:info,contactCandidates:contacts,draft:{subject:str(raw?.draft?.subject),body:str(raw?.draft?.body)},meta:{mode:'nebius',model}}}
+async function call(key,model,messages,max_tokens=3800,temperature=.1){const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}if(!r.ok)throw new Error(data?.error?.message||`Nebius ${r.status}`);if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.');return parse(data?.choices?.[0]?.message?.content)}
+function search(label){return `https://www.google.com/search?q=${encodeURIComponent(`${label} official website contact`)}`}
+function urlsIn(text){return new Set((str(text).match(/https?:\/\/[^\s<>"')\]]+/gi)||[]).map(x=>x.replace(/[.,;:!?]+$/,'')))}
+function normalize(raw,model,sourceText=''){
+  const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[]
+  const missing=Array.isArray(raw?.readiness?.missingFields)?raw.readiness.missingFields.map(x=>({key:str(x?.key),label:str(x?.label),reason:str(x?.reason),alternatives:arr(x?.alternatives)})).filter(x=>x.key&&x.label):[]
+  const info=Array.isArray(raw?.referenceInformation)?raw.referenceInformation.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[]
+  const suppliedUrls=urlsIn(sourceText)
+  const seen=new Set()
+  const contacts=Array.isArray(raw?.contactCandidates)?raw.contactCandidates.map(x=>{
+    const label=str(x?.label),proposed=str(x?.url).replace(/[.,;:!?]+$/,'')
+    if(!label||seen.has(label.toLowerCase()))return null
+    seen.add(label.toLowerCase())
+    const directlySupplied=suppliedUrls.has(proposed)&&/^https:\/\//i.test(proposed)&&!/google\.|bing\./i.test(proposed)
+    return{label,url:directlySupplied?proposed:search(label),reason:str(x?.reason),kind:directlySupplied?'official-site':'search',recommended:Boolean(x?.recommended)}
+  }).filter(Boolean).slice(0,3):[]
+  const m=raw?.messageSource||{}
+  const coreReady=Boolean(raw?.readiness?.targetIdentified&&raw?.readiness?.transactionIdentified&&raw?.readiness?.issueIdentified&&raw?.readiness?.outcomeIdentified)
+  return{confirmedFacts:facts,userStatements:arr(raw?.userStatements),requestedOutcome:str(raw?.requestedOutcome),readiness:{ready:coreReady,targetIdentified:Boolean(raw?.readiness?.targetIdentified),transactionIdentified:Boolean(raw?.readiness?.transactionIdentified),issueIdentified:Boolean(raw?.readiness?.issueIdentified),outcomeIdentified:Boolean(raw?.readiness?.outcomeIdentified),missingFields:coreReady?[]:missing},messageSource:{senderName:str(m.senderName),senderEmail:str(m.senderEmail),replyTo:str(m.replyTo),subject:str(m.subject),date:str(m.date),isForwarded:Boolean(m.isForwarded),isNoReply:Boolean(m.isNoReply),noReplyReason:str(m.noReplyReason),attachments:arr(m.attachments)},referenceInformation:info,contactCandidates:contacts,draft:{subject:str(raw?.draft?.subject),body:str(raw?.draft?.body)},meta:{mode:'nebius',model}}
+}
 export const config={maxDuration:60}
-export default async function handler(req,res){if(req.method!=='POST'){res.status(405).json({error:'Method not allowed.'});return}const key=process.env.NEBIUS_API_KEY;if(!key){res.status(503).json({error:'NEBIUS_API_KEY is not configured.'});return}try{const i=req.body||{},model=process.env.NEBIUS_MODEL||MODEL,ui=names[i.interfaceLanguage]||'English',recipient=names[i.recipientLanguage]||'English';if(i.mode==='translate'){if(!str(i.approvedSubject)||!str(i.approvedBody)){res.status(400).json({error:'Approved text is required.'});return}const result=await call(key,model,[{role:'system',content:'You are a faithful professional translator. Never add, omit, infer, soften, strengthen, or explain.'},{role:'user',content:`Translate from ${ui} to ${recipient}. Preserve every name, date, identifier, amount, currency, quantity, negation, and requested action exactly. Return JSON only: {"subject":"","body":""}.\nSUBJECT:\n${i.approvedSubject}\nBODY:\n${i.approvedBody}`}],2200);res.status(200).json({subject:str(result.subject),body:str(result.body)});return}const schema='{"confirmedFacts":[{"label":"","value":"","source":"document|message|user"}],"userStatements":[""],"requestedOutcome":"","readiness":{"targetIdentified":true,"transactionIdentified":true,"issueIdentified":true,"outcomeIdentified":true,"missingFields":[{"key":"","label":"","reason":"","alternatives":[""]}]},"messageSource":{"senderName":"","senderEmail":"","replyTo":"","subject":"","date":"","isForwarded":false,"isNoReply":false,"noReplyReason":"","attachments":[""]},"referenceInformation":[{"label":"","value":"","source":"document|message|user"}],"contactCandidates":[{"label":"","url":"","reason":"","kind":"official-site|contact-form|email","recommended":true}],"draft":{"subject":"","body":""}}';const system=`Use ${ui}. Return JSON only. Prepare a consumer inquiry that the recipient can process in one pass. Separate document/message facts from user statements. Never invent facts. Do not add requests the user did not make, including reasons, evidence, apologies, or written confirmation. Missing information may block only identifying the responsible organization/facility, locating the transaction/reservation, identifying the issue, or understanding the requested outcome. A reply-capable email is not required. Detect forwarded messages and use the innermost original business message. Detect no-reply from From/Reply-To and body wording. Never offer a no-reply address. Never invent an official URL; copy URLs only from supplied content, otherwise leave URL empty. The draft must include available customer/guest name, dates, booking/order/folio/ticket number, facility/provider, disputed item, unit amount, count, total, and requested action. Keep it concise.`;const user=`SHAPE:${schema}\nMESSAGE:\n${str(i.originalMessage)||'(none)'}\nUSER REQUEST:\n${str(i.userRequest)||'(none)'}\nOCR DOCUMENT TEXT:\n${str(i.documentText)||'(none)'}\nFILES:${JSON.stringify(i.documents||[])}\nADDITIONAL:${JSON.stringify(i.additionalInformation||{})}`;const raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user}]);const result=normalize(raw,model);if(!result.requestedOutcome||!result.draft.subject||!result.draft.body)throw new Error('Incomplete AI analysis.');res.status(200).json(result)}catch(e){console.error('analyze-case',e);res.status(502).json({error:e instanceof Error?e.message:'Analysis failed.'})}}
+export default async function handler(req,res){
+  if(req.method!=='POST'){res.status(405).json({error:'Method not allowed.'});return}
+  const key=process.env.NEBIUS_API_KEY
+  if(!key){res.status(503).json({error:'NEBIUS_API_KEY is not configured.'});return}
+  try{
+    const i=req.body||{},model=process.env.NEBIUS_MODEL||MODEL,ui=names[i.interfaceLanguage]||'English',recipient=names[i.recipientLanguage]||'English'
+    if(i.mode==='translate'){
+      if(!str(i.approvedSubject)||!str(i.approvedBody)){res.status(400).json({error:'Approved text is required.'});return}
+      const translationSystem=`You convert the CURRENT approved consumer inquiry from ${ui} to ${recipient}. Return JSON only as {"subject":"","body":""}.
+CONTENT:
+- Use only the current approved subject and body. Never reuse examples, prior cases, or another industry.
+- Preserve every fact, official name, identifier type and value, date, amount, currency, quantity, negation, and requested action.
+- A Folio Number remains Folio Number; a Reservation ID remains Reservation ID; a Rental Agreement Number remains Rental Agreement Number.
+- Every monetary value must keep an explicit currency symbol or ISO code. Never output a bare monetary number.
+- Do not add allegations, requests, evidence, promises, deadlines, or explanations.
+FORMAT:
+- Produce a complete, send-ready message with exactly one salutation and one closing/signature block.
+- Never address the message to the customer, guest, passenger, renter, or account holder.
+- English: "Dear [Organization] Team," or "To whom it may concern,"; then the body; "Thank you for your assistance."; "Best regards,"; sender name.
+- Japanese: "[Organization] ご担当者様" or "ご担当者様"; polite closing; sender name.
+- Spanish: "Al equipo de [Organización]:" or "A quien corresponda:"; "Gracias por su ayuda."; "Atentamente,"; sender name.
+- Keep the subject neutral and construct it only from the current requested action, disputed item, and exact primary identifier type/value.`
+      const result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:`APPROVED SUBJECT:\n${i.approvedSubject}\n\nAPPROVED BODY:\n${i.approvedBody}`}],2600,0)
+      res.status(200).json({subject:str(result.subject),body:str(result.body)});return
+    }
+    const schema='{"confirmedFacts":[{"label":"","value":"","source":"document|message|user"}],"userStatements":[""],"requestedOutcome":"","readiness":{"targetIdentified":true,"transactionIdentified":true,"issueIdentified":true,"outcomeIdentified":true,"missingFields":[{"key":"","label":"","reason":"","alternatives":[""]}]},"messageSource":{"senderName":"","senderEmail":"","replyTo":"","subject":"","date":"","isForwarded":false,"isNoReply":false,"noReplyReason":"","attachments":[""]},"referenceInformation":[{"label":"","value":"","source":"document|message|user"}],"contactCandidates":[{"label":"","url":"","reason":"","kind":"official-site|search","recommended":true}],"draft":{"subject":"","body":""}}'
+    const system=`Use ${ui}. Return JSON only in the supplied shape.
+
+EVIDENCE AND ACCURACY
+- Use only the original message, OCR document text, uploaded-file metadata, user request, and additional information supplied in THIS request. Never reuse examples or details from another case.
+- Never invent, translate, expand, normalize, or correct official organization/property names, personal names, addresses, codes, abbreviations, or identifiers.
+- Never infer a state/country from a city, abbreviation, or postal code. Never add Apt., Suite, Unit, Room, Terminal, Gate, or similar qualifiers unless explicitly shown.
+- If sources conflict, do not merge them or choose by plausibility. Omit the disputed value from the draft and ask only if essential.
+- Label AI calculations as estimates/calculations, not document facts.
+
+USER-FACING LANGUAGE AND PRIVACY
+- Write every user-facing label, summary, reason, requested outcome, and draft in ${ui}. Preserve proper names, official names, identifiers, codes, vehicle models, amounts, and currencies.
+- Omit internal/test-authoring text such as OCR note, AI note, Purposeful test condition, training note, test note, or instructions explaining how a test document was constructed.
+- Every monetary value must include a currency symbol or ISO code in every field. Never output bare 42.00 when it means money.
+- Do not include passwords, full card numbers, card expiry, approval/AID/AVS/CVV/CVM codes, processor data, or personal addresses in the draft.
+
+CASE ORGANIZATION
+- Separate confirmed document/message facts from user statements. Never present the user's statement as a document fact.
+- Missing information may block only: identifying the responsible organization/facility, locating the transaction/reservation, identifying the issue, or understanding the requested outcome.
+- If those four elements are identified, mark all four readiness flags true and do not block progress for optional details.
+- Prefer identifiers by context: hotel reservation/folio; airline PNR/ticket; rental reservation/rental agreement; retail order/invoice; subscription account/invoice.
+- When a strong identifier exists, omit card brand/last-four and lower-priority identifiers from the draft.
+- Include only the minimum identifiers the recipient needs to locate the case.
+- For daily charges, calculate unit amount x relevant quantity and use the total when supported. If totals genuinely conflict, do not choose silently.
+
+MESSAGE SOURCE
+- Detect forwarded messages and use the innermost original business message.
+- Detect no-reply from From, Reply-To, headers, and body wording. Never offer a no-reply address as a contact route.
+- Never use the customer or a forwarding sender/recipient as the inquiry addressee.
+
+CONTACT CANDIDATES - SIMPLE SCOPE
+- Teltruva prepares the inquiry; it does not crawl websites, auto-select a recipient, or claim that a contact route has been verified.
+- Return 1-3 organization/property candidates only. Prefer the most specific verified facility, branch, seller, or provider from the current evidence; a parent brand is secondary.
+- Do not return phone, live chat, social media, review sites, or third-party directories.
+- Do not invent a URL or email address. Copy a URL only when it appears verbatim in the supplied message/document; otherwise leave url empty so the app creates a Google search link.
+- If several similarly named organizations/properties are plausible, return separate candidates and explain exactly what matches or remains uncertain.
+- Candidate reasons must tell the user to confirm the official site, facility name, and location. Do not imply that the displayed route is confirmed.
+
+DRAFT
+- Write a concise, complete, first-person inquiry in ${ui} with one appropriate salutation, the issue, exact requested action, and a polite closing/signature.
+- Keep the subject neutral: requested action + disputed item + exact primary identifier type/value. Avoid accusatory wording unless explicitly requested.
+- Never rename identifier types.
+- Do not add requests the user did not make.
+
+OUTPUT QUALITY
+- Do not expose internal reasoning.
+- Keep the draft easy to process in one pass.`
+    const user=`SHAPE:${schema}\nMESSAGE:\n${str(i.originalMessage)||'(none)'}\nUSER REQUEST:\n${str(i.userRequest)||'(none)'}\nOCR DOCUMENT TEXT:\n${str(i.documentText)||'(none)'}\nFILES:${JSON.stringify(i.documents||[])}\nADDITIONAL:${JSON.stringify(i.additionalInformation||{})}`
+    const sourceText=[i.originalMessage,i.documentText,JSON.stringify(i.documents||[])].filter(Boolean).join('\n')
+    let raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user}])
+    let result=normalize(raw,model,sourceText)
+    if(!result.requestedOutcome){const repair=`Return the complete JSON shape again. requestedOutcome is missing. Summarize only the action explicitly requested by the CURRENT user in ${ui}.`;raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user},{role:'assistant',content:JSON.stringify(raw)},{role:'user',content:repair}],4000,0);result=normalize(raw,model,sourceText)}
+    if(!result.requestedOutcome)throw new Error('AI could not identify the requested outcome. Please state what you want the company to do.')
+    if(result.readiness.ready&&(!result.draft.subject||!result.draft.body)){const repair=`Return the complete JSON shape again. The CURRENT case is ready but its draft is incomplete. Build the subject and body only from this request and evidence.`;raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user},{role:'assistant',content:JSON.stringify(raw)},{role:'user',content:repair}],4300,0);result=normalize(raw,model,sourceText)}
+    if(result.readiness.ready&&(!result.draft.subject||!result.draft.body))throw new Error('AI could not prepare the inquiry draft. Please review the requested outcome and try again.')
+    res.status(200).json(result)
+  }catch(e){console.error('analyze-case',e);res.status(502).json({error:e instanceof Error?e.message:'Analysis failed.'})}
+}
