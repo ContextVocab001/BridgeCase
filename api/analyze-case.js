@@ -55,6 +55,52 @@ function cleanFactValue(label,value){
   if(/(?:date and time|transaction date|payment date|取引日時|支払日時)/i.test(l))return v.replace(/([0-9]{4}[-年][0-9]{1,2}[-月][0-9]{1,2}日?)(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?/,'$1')
   return v
 }
+function moneyNumber(value){const n=Number(String(value).replace(/,/g,''));return Number.isFinite(n)?Math.round(n*100)/100:null}
+function moneyKey(value){const n=moneyNumber(value);return n===null?'':n.toFixed(2)}
+function detectCurrency(text){
+  const t=str(text)
+  if(/\$|\bUSD\b/i.test(t))return{symbol:'$',code:'USD'}
+  if(/€|\bEUR\b/i.test(t))return{symbol:'€',code:'EUR'}
+  if(/£|\bGBP\b/i.test(t))return{symbol:'£',code:'GBP'}
+  if(/¥|￥|\bJPY\b|円/.test(t))return{symbol:'¥',code:'JPY'}
+  return{symbol:'',code:''}
+}
+function stripLeadingDate(line){return str(line)
+  .replace(/^\s*(?:\d{1,2}[A-Za-z]{3}\d{2,4}|\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})\s+/,'')
+  .trim()}
+function normalizeItemLabel(label){return stripLeadingDate(label).replace(/\s+/g,' ').replace(/\s*[:\-]\s*$/,'').trim()}
+function extractLineItems(text){
+  const currency=detectCurrency(text),groups=new Map(),sourceLines=[]
+  for(const raw of str(text).split(/\r?\n/)){
+    const line=raw.replace(/\s+/g,' ').trim()
+    if(!line||line.length>180)continue
+    const m=line.match(/^(.*?)(?:\s+)([$€£¥￥]?\s*-?\d{1,3}(?:,\d{3})*(?:\.\d{2})|[$€£¥￥]?\s*-?\d+\.\d{2})\s*$/)
+    if(!m)continue
+    const label=normalizeItemLabel(m[1]),amountText=m[2].replace(/\s/g,''),amount=moneyNumber(amountText.replace(/[$€£¥￥]/g,''))
+    if(!label||amount===null)continue
+    if(/^(?:balance|total|subtotal|credits?|charges?|visa|mastercard|amex|american express|cash|card|payment|amount paid|tax total|合計|小計|残高|支払|カード)$/i.test(label))continue
+    if(/(?:card #|approval|auth|aid|mid|avs|cvv|cvm|account|room:|room type|rate:|number of guests)/i.test(label))continue
+    const key=`${label.toLowerCase()}|${amount.toFixed(2)}`
+    const current=groups.get(key)||{label,unitAmount:amount,count:0,total:0,sourceLines:[]}
+    current.count+=1;current.total=Math.round((current.total+amount)*100)/100;current.sourceLines.push(line)
+    groups.set(key,current);sourceLines.push(line)
+  }
+  const items=[...groups.values()].map(x=>({...x,currencySymbol:currency.symbol,currencyCode:currency.code,unitFormatted:`${currency.symbol}${x.unitAmount.toFixed(2)}${currency.symbol?'':currency.code?` ${currency.code}`:''}`,totalFormatted:`${currency.symbol}${x.total.toFixed(2)}${currency.symbol?'':currency.code?` ${currency.code}`:''}`}))
+  return{currency,...currency,items,sourceLines}
+}
+function collectAllowedMoney(text,structured){
+  const allowed=new Set()
+  const add=n=>{const k=moneyKey(n);if(k)allowed.add(k)}
+  for(const m of str(text).matchAll(/[$€£¥￥]?\s*(-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2})\s*(?:USD|EUR|GBP|JPY|米ドル|ドル|円|ユーロ|ポンド)?/gi))add(m[1])
+  for(const item of structured.items){add(item.unitAmount);add(item.total)}
+  return allowed
+}
+function extractDraftMoney(text){const values=[];for(const m of str(text).matchAll(/[$€£¥￥]\s*(-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2})|(-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2})\s*(?:USD|EUR|GBP|JPY|米ドル|ドル|円|ユーロ|ポンド)/gi)){const k=moneyKey(m[1]||m[2]);if(k)values.push(k)}return values}
+function draftUsesOnlyAllowedMoney(text,allowed){return extractDraftMoney(text).every(x=>allowed.has(x))}
+function structuredEvidenceText(structured){
+  if(!structured.items.length)return'No deterministic line-item groups were extracted.'
+  return structured.items.map((x,index)=>`${index+1}. ${x.label}: ${x.unitFormatted} x ${x.count} line item(s) = ${x.totalFormatted}; source lines: ${JSON.stringify(x.sourceLines)}`).join('\n')
+}
 function normalize(raw,model,sourceText='',ui='English'){
   const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:cleanFactValue(x?.label,x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value&&isDisplayFact(x.label)):[]
   const missing=Array.isArray(raw?.readiness?.missingFields)?raw.readiness.missingFields.map(x=>({key:str(x?.key),label:str(x?.label),reason:str(x?.reason),alternatives:arr(x?.alternatives)})).filter(x=>x.key&&x.label):[]
@@ -85,6 +131,8 @@ export default async function handler(req,res){
 CONTENT:
 - Use only the current approved subject and body. Never reuse examples, prior cases, or another industry.
 - Preserve every fact, official name, identifier type and value, date, amount, currency, quantity, negation, and requested action.
+- Translate the salutation and closing into the target language. English must start with "Dear [Organization] Team," or "To whom it may concern,". Never leave Japanese ご担当者様 in an English translation.
+- Render compact source dates naturally in the target language while preserving the date itself.
 - A Folio Number remains Folio Number; a Reservation ID remains Reservation ID; a Rental Agreement Number remains Rental Agreement Number.
 - Every monetary value must keep an explicit currency symbol or ISO code. Never output a bare monetary number.
 - Do not add allegations, requests, evidence, promises, deadlines, or explanations.
@@ -100,13 +148,15 @@ FORMAT:
 - Keep the subject neutral and construct it only from the current requested action, disputed item, and exact primary identifier type/value.`
       const translationUser=`APPROVED SUBJECT:\n${i.approvedSubject}\n\nAPPROVED BODY:\n${i.approvedBody}`
       let result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:translationUser}],2600,0)
+      const translationMoney=collectAllowedMoney(`${i.approvedSubject}\n${i.approvedBody}`,{items:[]})
       let translatedSubject=str(result.subject),translatedBody=cleanDraftText(result.body,recipient,`${i.approvedSubject}\n${i.approvedBody}`)
-      if(!translationMatchesLanguage(`${translatedSubject}\n${translatedBody}`,recipient)){
+      const translationInvalid=()=>!translationMatchesLanguage(`${translatedSubject}\n${translatedBody}`,recipient)||!hasValidSalutation(translatedBody,recipient)||hasBareMoney(`${translatedSubject}\n${translatedBody}`)||!draftUsesOnlyAllowedMoney(`${translatedSubject}\n${translatedBody}`,translationMoney)
+      if(translationInvalid()){
         const retry=`The previous output was not written in ${recipient}. Translate the approved subject and body into ${recipient} now. Return JSON only. Do not repeat the source-language text. Do not add facts.`
         result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:translationUser},{role:'assistant',content:JSON.stringify(result)},{role:'user',content:retry}],2600,0)
         translatedSubject=str(result.subject);translatedBody=cleanDraftText(result.body,recipient,`${i.approvedSubject}\n${i.approvedBody}`)
       }
-      if(!translationMatchesLanguage(`${translatedSubject}\n${translatedBody}`,recipient))throw new Error(`Translation was not produced in ${recipient}. Please try again.`)
+      if(translationInvalid())throw new Error(`Translation was not produced as a complete, fact-grounded ${recipient} inquiry. Please try again.`)
       res.status(200).json({subject:translatedSubject,body:translatedBody});return
     }
     const schema='{"confirmedFacts":[{"label":"","value":"","source":"document|message|user"}],"userStatements":[""],"requestedOutcome":"","readiness":{"targetIdentified":true,"transactionIdentified":true,"issueIdentified":true,"outcomeIdentified":true,"missingFields":[{"key":"","label":"","reason":"","alternatives":[""]}]},"messageSource":{"senderName":"","senderEmail":"","replyTo":"","subject":"","date":"","isForwarded":false,"isNoReply":false,"noReplyReason":"","attachments":[""]},"referenceInformation":[{"label":"","value":"","source":"document|message|user"}],"contactCandidates":[{"label":"","url":"","reason":"","kind":"official-site|search","recommended":true}],"draft":{"subject":"","body":""}}'
@@ -136,7 +186,10 @@ CASE ORGANIZATION
 - In confirmedFacts, include the verified responsible organization/property name so the user can confirm the correct counterparty. Also include the exact primary identifier, the disputed item/amount, the total when useful, and a date only when useful. Do not show address, payment method, card brand/last four, exact time, authorization codes, MID/AID/AVS/CVV/CVM, subtotal, tax rate, or installment count.
 - Never split one OCR line into invented sibling fields. If the receipt contains one line labeled "Tax 2" with a rate and amount, represent it as one Tax 2 fact. Never invent Tax 1.
 - A label such as "Tax 2" does not by itself prove duplicate taxation. Describe it neutrally, ask what the charge is and how it was calculated, and request a refund only if it was charged in error.
-- For daily charges, calculate unit amount x relevant quantity and use the total when supported. For hotel charges, nights equal checkout date minus check-in date. Include the unit rate and calculated disputed total as separate, clearly labeled facts when supported. Every monetary fact must include the evidence-supported currency symbol or ISO code. Never output a bare monetary amount. If totals genuinely conflict, do not choose silently.
+- DETERMINISTIC_LINE_ITEMS below are calculated by application code from matching OCR lines. Treat each source-line count and computed group total as authoritative. Never replace them with date arithmetic or an AI estimate.
+- For a repeated disputed line item, use its deterministic count, unit amount, and computed total. Example: five matching $10.00 lines equal $50.00.
+- Do not infer quantity from check-in/check-out dates when matching charge lines are available.
+- If no deterministic group applies, preserve explicit evidence values and do not invent a total. Every monetary fact must include the evidence-supported currency symbol or ISO code. Never output a bare monetary amount.
 
 MESSAGE SOURCE
 - Detect forwarded messages and use the innermost original business message.
@@ -169,8 +222,10 @@ DRAFT
 OUTPUT QUALITY
 - Do not expose internal reasoning.
 - Keep the draft easy to process in one pass.`
-    const user=`SHAPE:${schema}\nMESSAGE:\n${str(i.originalMessage)||'(none)'}\nUSER REQUEST:\n${str(i.userRequest)||'(none)'}\nOCR DOCUMENT TEXT:\n${str(i.documentText)||'(none)'}\nFILES:${JSON.stringify(i.documents||[])}\nADDITIONAL:${JSON.stringify(i.additionalInformation||{})}`
     const sourceText=[i.originalMessage,i.documentText,JSON.stringify(i.documents||[])].filter(Boolean).join('\n')
+    const deterministic=extractLineItems(str(i.documentText))
+    const deterministicText=structuredEvidenceText(deterministic)
+    const user=`SHAPE:${schema}\nMESSAGE:\n${str(i.originalMessage)||'(none)'}\nUSER REQUEST:\n${str(i.userRequest)||'(none)'}\nOCR DOCUMENT TEXT:\n${str(i.documentText)||'(none)'}\nDETERMINISTIC_LINE_ITEMS:\n${deterministicText}\nFILES:${JSON.stringify(i.documents||[])}\nADDITIONAL:${JSON.stringify(i.additionalInformation||{})}`
     let raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user}])
     let result=normalize(raw,model,sourceText,ui)
     if(!result.requestedOutcome){const repair=`Return the complete JSON shape again. requestedOutcome is missing. Summarize only the action explicitly requested by the CURRENT user in ${ui}.`;raw=await call(key,model,[{role:'system',content:system},{role:'user',content:user},{role:'assistant',content:JSON.stringify(raw)},{role:'user',content:repair}],4000,0);result=normalize(raw,model,sourceText,ui)}
@@ -181,10 +236,12 @@ SOURCE LIMITS
 - Use only CURRENT_CASE_JSON, CURRENT_USER_REQUEST, and CURRENT_EVIDENCE below.
 - Never invent what the customer bought or did. Do not infer a meal, restaurant visit, hotel stay, room purchase, rental, flight, or other service unless explicitly stated.
 - Never invent a sender name.
-CALCULATION AND CURRENCY
-- If a disputed fee is stated per day/night and the evidence supplies the number of charged days/nights or a check-in/check-out range, calculate the disputed total. For a hotel, nights equal checkout date minus check-in date. Example rule only: a five-night stay charged $10.00 per night means a disputed total of $50.00.
-- State both the unit charge and calculation when useful, for example "$10.00 per night x 5 nights = $50.00".
-- Every monetary amount must include the currency symbol or code shown in the current evidence. Never output bare amounts such as 10.00 or 50.00. Do not guess a currency that is absent from all current evidence.
+DETERMINISTIC EVIDENCE AND CURRENCY
+- DETERMINISTIC_LINE_ITEMS is application-calculated evidence. Use the matching disputed line-item group exactly: label, unit amount, count, and computed total.
+- Never recount from dates and never replace a deterministic total with another amount.
+- If five matching lines are listed at $10.00 each, the only allowed computed total is $50.00.
+- Mention unit amount x exact matching-line count = computed total when useful.
+- Every monetary amount must include the currency symbol or code supplied in the deterministic evidence/current evidence. Never output a bare monetary amount.
 RECIPIENT AND TONE
 - Use the verified organization/property name in the salutation when available.
 - Japanese salutation: "[Organization] ご担当者様"; if unavailable, "ご担当者様".
@@ -201,16 +258,17 @@ CLOSING
 - English: end with "Thank you for your assistance." and "Best regards," with no name after it.
 - Spanish: end with "Gracias por su ayuda." and "Atentamente," with no name after it.
 - Never output placeholders.`
-      const draftUser=`CURRENT_CASE_JSON:\n${JSON.stringify({confirmedFacts:result.confirmedFacts,userStatements:result.userStatements,requestedOutcome:result.requestedOutcome,referenceInformation:result.referenceInformation,contactCandidates:result.contactCandidates})}\n\nCURRENT_USER_REQUEST:\n${str(i.userRequest)}\n\nCURRENT_EVIDENCE:\n${sourceText}`
+      const draftUser=`CURRENT_CASE_JSON:\n${JSON.stringify({confirmedFacts:result.confirmedFacts,userStatements:result.userStatements,requestedOutcome:result.requestedOutcome,referenceInformation:result.referenceInformation,contactCandidates:result.contactCandidates})}\n\nCURRENT_USER_REQUEST:\n${str(i.userRequest)}\n\nDETERMINISTIC_LINE_ITEMS:\n${deterministicText}\n\nCURRENT_EVIDENCE:\n${sourceText}`
+      const allowedMoney=collectAllowedMoney(`${sourceText}\n${str(i.userRequest)}`,deterministic)
       let generated=await call(key,model,[{role:'system',content:draftSystem},{role:'user',content:draftUser}],2600,0)
       let subject=str(generated?.subject),body=cleanDraftText(generated?.body,ui,sourceText)
-      const badDraft=()=>!subject||!body||!hasValidSalutation(body,ui)||hasBareMoney(`${subject}\n${body}`)||hasAccusatoryWording(`${subject}\n${body}`)
+      const badDraft=()=>!subject||!body||!hasValidSalutation(body,ui)||hasBareMoney(`${subject}\n${body}`)||hasAccusatoryWording(`${subject}\n${body}`)||!draftUsesOnlyAllowedMoney(`${subject}\n${body}`,allowedMoney)
       if(badDraft()){
-        const retry=`Rewrite the CURRENT draft in ${ui}. Return JSON only. Correct every issue: include a valid salutation; use the verified organization name when available; calculate any per-day/per-night disputed total from current dates/quantity; attach the evidence-supported currency symbol/code to every amount; remove card/payment details, room/front-desk number, addresses, tax rate, unsupported allegations, and accusatory wording; keep one exact primary identifier; use the correct ${ui} closing.`
+        const retry=`Rewrite the CURRENT draft in ${ui}. Return JSON only. Correct every issue: include a valid salutation; use the verified organization name when available; use the matching DETERMINISTIC_LINE_ITEMS count and computed total; never calculate quantity from dates; attach the evidence-supported currency symbol/code to every amount; remove card/payment details, room/front-desk number, addresses, tax rate, unsupported allegations, and accusatory wording; keep one exact primary identifier; use the correct ${ui} closing.`
         generated=await call(key,model,[{role:'system',content:draftSystem},{role:'user',content:draftUser},{role:'assistant',content:JSON.stringify(generated)},{role:'user',content:retry}],2800,0)
         subject=str(generated?.subject);body=cleanDraftText(generated?.body,ui,sourceText)
       }
-      if(!subject||!body||!hasValidSalutation(body,ui)||hasBareMoney(`${subject}\n${body}`))throw new Error('AI could not prepare a complete inquiry draft. Please try again.')
+      if(!subject||!body||!hasValidSalutation(body,ui)||hasBareMoney(`${subject}\n${body}`)||!draftUsesOnlyAllowedMoney(`${subject}\n${body}`,allowedMoney))throw new Error('AI could not prepare a fact-grounded inquiry draft. Please try again.')
       result.draft={subject,body}
     }
     res.status(200).json(result)
