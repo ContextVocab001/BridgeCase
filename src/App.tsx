@@ -4,8 +4,9 @@ import { MsgReader } from '@kenjiuno/msgreader-web-ng'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ChangeEvent, DragEvent } from 'react'
 import './App.css'
-import { analyzeCase, runOcr, translateApprovedDraft } from './api/caseAnalysis'
+import { analyzeCase, buildCaseReviewData, prepareStructuredCase, runOcr, translateApprovedDraft } from './api/caseAnalysis'
 import type { CaseAnalysis, UploadedSource } from './api/caseAnalysis'
+import type { CaseReviewData } from './types/workflow'
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker
 
@@ -177,6 +178,7 @@ function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState('')
   const [analysis, setAnalysis] = useState<CaseAnalysis | null>(null)
+  const [structuredReview, setStructuredReview] = useState<CaseReviewData | null>(null)
   const [additional, setAdditional] = useState<Record<string,string>>({})
   const [draftSubject, setDraftSubject] = useState('')
   const [draftBody, setDraftBody] = useState('')
@@ -191,11 +193,6 @@ function App() {
     ja: { target: '相手先', transaction: '取引情報', issue: '問題内容', request: '希望する対応' },
     es: { target: 'Destinatario', transaction: 'Transacción', issue: 'Problema', request: 'Solución solicitada' },
   })
-  const isUsefulReference = (label: string) => {
-    const normalized = label.toLowerCase()
-    const excluded = ['card', 'mastercard', 'visa', 'amex', 'expiry', 'expiration', 'approval code', 'aid', 'avs', 'cvv', 'cvm', 'merchant', 'location', 'address', 'カード', '有効期限', '承認コード', '加盟店', '所在地', 'tarjeta', 'vencimiento', 'comercio', 'ubicación']
-    return !excluded.some((term) => normalized.includes(term))
-  }
   const contactActionLabel = (kind: string) => {
     if (kind === 'search') return ui({ en: 'Search official site and contact route', ja: '公式サイト・問い合わせ先を検索', es: 'Buscar sitio y contacto oficiales' })
     return ui({ en: 'Review official site', ja: '公式サイトを確認', es: 'Revisar sitio oficial' })
@@ -203,6 +200,7 @@ function App() {
 
   const invalidateGeneratedResults = () => {
     setAnalysis(null)
+    setStructuredReview(null)
     setAdditional({})
     setDraftSubject('')
     setDraftBody('')
@@ -231,12 +229,14 @@ function App() {
   const hasFiles = files.length > 0
   const hasRequest = request.trim().length > 0
   const canAnalyze = hasRequest
-  const canCreateInquiry = Boolean(
-    analysis?.readiness.targetIdentified &&
-    analysis?.readiness.transactionIdentified &&
-    analysis?.readiness.issueIdentified &&
-    analysis?.readiness.outcomeIdentified
-  )
+  const canCreateInquiry = structuredReview
+    ? structuredReview.readiness.ready
+    : Boolean(
+      analysis?.readiness.targetIdentified &&
+      analysis?.readiness.transactionIdentified &&
+      analysis?.readiness.issueIdentified &&
+      analysis?.readiness.outcomeIdentified
+    )
 
   const analyzeCurrentCase = async () => {
     if (!request.trim()) { setAnalysisError(language === 'ja' ? '何が問題で、どうしてほしいかを入力してください。' : 'Describe the issue and requested outcome.'); return }
@@ -249,8 +249,14 @@ function App() {
       const [messageOcr, documentOcr] = await Promise.all([messageImages.length ? runOcr(messageImages) : Promise.resolve({ text: '', pages: [] }), documentImages.length ? runOcr(documentImages) : Promise.resolve({ text: '', pages: [] })])
       const originalMessage = [message, ...emlTexts, ...msgTexts, messageOcr.text].filter(Boolean).join('\n\n--- MESSAGE SOURCE ---\n\n')
       const documents: UploadedSource[] = files.map((file) => ({ name: file.name, type: file.type, size: file.size }))
-      const result = await analyzeCase({ originalMessage, userRequest: request, interfaceLanguage: language, recipientLanguage, documents, documentText: documentOcr.text, additionalInformation: additional })
-      setAnalysis(result); setDraftSubject(result.draft.subject); setDraftBody(result.draft.body); setShowModal(false); go('review')
+      const resultPromise = analyzeCase({ originalMessage, userRequest: request, interfaceLanguage: language, recipientLanguage, documents, documentText: documentOcr.text, additionalInformation: additional })
+      const preparationPromise = documentOcr.text.trim()
+        ? prepareStructuredCase({ interfaceLanguage:language, draftLanguage:language, userText:request, documentText:documentOcr.text })
+        : Promise.resolve(null)
+      const [result, preparation] = await Promise.all([resultPromise, preparationPromise])
+      setAnalysis(result)
+      setStructuredReview(preparation ? buildCaseReviewData(preparation) : null)
+      setDraftSubject(result.draft.subject); setDraftBody(result.draft.body); setShowModal(false); go('review')
     } catch (error) { setAnalysisError(error instanceof Error ? error.message : 'Analysis failed.') } finally { setIsAnalyzing(false) }
   }
   const translateDraft = async () => {
@@ -374,14 +380,29 @@ function App() {
     </main>
   )
 
+  const formatStructuredFact = (fact: CaseReviewData['confirmedFacts'][number]) => {
+    if (fact.key !== 'chargeSummary') return fact.value
+    try {
+      const summary = JSON.parse(fact.value) as { currencyCode?: string; currencySymbol?: string; lineCount?: number; totalAmount?: number; amountGroups?: { unitAmount:number; count:number; subtotal:number }[] }
+      const currency = summary.currencySymbol || summary.currencyCode || ''
+      const groups = summary.amountGroups?.map(group=>`${currency}${group.unitAmount.toFixed(2)} × ${group.count}`).join(' + ') || ''
+      return `${groups}${groups ? ' = ' : ''}${currency}${Number(summary.totalAmount || 0).toFixed(2)}`
+    } catch { return fact.value }
+  }
+
   const review = analysis && (
-    <main className="workflow-main">{progress(2)}<section className="workflow-heading"><p>{t.demo}</p><h1>{t.reviewTitle}</h1><span>{t.reviewHelp}</span></section>
-      {analysis.messageSource.isNoReply&&<div className="no-reply-warning"><b>Do Not Reply</b><p>{language==='ja'?'元のメッセージは送信専用です。別の公式問い合わせ方法を使用してください。':'The original message cannot receive replies. Use another official contact route.'}</p><small>{analysis.messageSource.noReplyReason}</small></div>}
-      <section className="review-card"><h2>{ui({en:'Confirmed from messages and documents',ja:'資料・メッセージから確認できた内容',es:'Confirmado en mensajes y documentos'})}</h2><div className="facts">{analysis.confirmedFacts.map((fact,index)=><label key={`${fact.label}-${index}`}><span>{fact.label}</span><b>{fact.value}</b></label>)}</div></section>
-      <section className="review-card"><h2>{language==='ja'?'あなたが説明した内容':'What you explained'}</h2><ul className="statement-list">{analysis.userStatements.map((item,index)=><li key={index}>{item}</li>)}</ul></section>
-      <section className="review-card"><h2>{ui({en:'Requested outcome',ja:'希望する対応',es:'Solución solicitada'})}</h2><p className="requested-outcome">{analysis.requestedOutcome}</p></section>
-      <section className={`review-card readiness ${canCreateInquiry?'ready':'blocked'}`}><h2>{ui({en:'Readiness',ja:'送信準備状況',es:'Estado de preparación'})}</h2><div className="readiness-checks"><span>{analysis.readiness.targetIdentified?'✓':'○'} {readinessLabels.target}</span><span>{analysis.readiness.transactionIdentified?'✓':'○'} {readinessLabels.transaction}</span><span>{analysis.readiness.issueIdentified?'✓':'○'} {readinessLabels.issue}</span><span>{analysis.readiness.outcomeIdentified?'✓':'○'} {readinessLabels.request}</span></div><p>{canCreateInquiry?ui({en:'The case is ready. Review the organized information and continue to the draft.',ja:'案件を作成するための情報は揃っています。整理された内容を確認して、問い合わせ文へ進んでください。',es:'La información del caso está completa. Revisa el contenido organizado y continúa al borrador.'}):ui({en:'Add only the essential information below to complete the case.',ja:'案件を完成させるため、次の必須情報だけ追加してください。',es:'Añade únicamente la información esencial para completar el caso.'})}</p>{!canCreateInquiry&&<div className="missing-fields">{analysis.readiness.missingFields.map(field=><label key={field.key}><b>{field.label}</b><small>{field.reason}</small><input value={additional[field.key]||''} onChange={e=>setAdditional({...additional,[field.key]:e.target.value})} placeholder={field.alternatives?.join(' / ')}/></label>)}<button className="primary" onClick={analyzeCurrentCase}>{ui({en:'Review again',ja:'追加情報を反映して再確認',es:'Revisar de nuevo'})}</button></div>}</section>
-      <section className="review-card"><h2>{ui({en:'Information that helps identify the case',ja:'相手が案件を特定するための情報',es:'Información para identificar el caso'})}</h2><div className="facts">{analysis.referenceInformation.filter((fact)=>isUsefulReference(fact.label)).map((fact,index)=><label key={`${fact.label}-${index}`}><span>{fact.label}</span><b>{fact.value}</b></label>)}</div></section>
+    <main className="workflow-main">{progress(2)}<section className="workflow-heading"><p>{ui({en:'Step 2',ja:'ステップ2',es:'Paso 2'})}</p><h1>{ui({en:'Review your case',ja:'案件内容を確認',es:'Revisa tu caso'})}</h1><span>{ui({en:'Check the facts, your explanation, and the requested outcome before continuing.',ja:'資料から確認した事実、あなたの説明、希望する対応を確認してください。',es:'Comprueba los hechos, tu explicación y el resultado solicitado antes de continuar.'})}</span></section>
+      {structuredReview ? <>
+        <section className="review-card"><h2>{ui({en:'Confirmed from the source',ja:'資料から確認できた内容',es:'Confirmado en la fuente'})}</h2><div className="facts">{structuredReview.confirmedFacts.map((fact)=><label key={fact.key}><span>{fact.label}</span><b>{formatStructuredFact(fact)}</b></label>)}</div></section>
+        <section className="review-card"><h2>{ui({en:'What you explained',ja:'あなたが説明した内容',es:'Lo que explicaste'})}</h2><ul className="statement-list">{structuredReview.userStatements.map((statement,index)=><li key={`${statement}-${index}`}>{statement}</li>)}</ul></section>
+        <section className="review-card outcome"><h2>{ui({en:'Requested outcome',ja:'希望する対応',es:'Resultado solicitado'})}</h2><strong>{structuredReview.requestedOutcome.statement}</strong>{structuredReview.requestedOutcome.amount!==undefined&&<p>{ui({en:'Program-confirmed disputed amount',ja:'プログラムで確認した対象金額',es:'Importe confirmado por el programa'})}: {structuredReview.requestedOutcome.currency || ''} {structuredReview.requestedOutcome.amount.toFixed(2)}</p>}</section>
+        <section className={`review-card readiness ${structuredReview.readiness.ready?'ready':'blocked'}`}><h2>{ui({en:'Readiness',ja:'送信準備状況',es:'Estado de preparación'})}</h2><div className="readiness-checks"><span>{structuredReview.readiness.hasOrganization?'✓':'○'} {readinessLabels.target}</span><span>{structuredReview.readiness.hasPrimaryIdentifier?'✓':'○'} {readinessLabels.transaction}</span><span>{structuredReview.readiness.hasIssue?'✓':'○'} {readinessLabels.issue}</span><span>{structuredReview.readiness.hasOutcome?'✓':'○'} {readinessLabels.request}</span></div></section>
+        <section className="review-card"><h2>{ui({en:'Information that helps identify the case',ja:'相手が案件を特定するための情報',es:'Información para identificar el caso'})}</h2><div className="facts">{structuredReview.primaryIdentifier?<label><span>{structuredReview.primaryIdentifier.label}</span><b>{structuredReview.primaryIdentifier.value}</b></label>:<p>{ui({en:'No primary identifier was confirmed from the source.',ja:'資料から主要な識別番号を確認できませんでした。',es:'No se confirmó un identificador principal en la fuente.'})}</p>}</div></section>
+      </> : <>
+        <section className="review-card"><h2>{ui({en:'Confirmed from the information provided',ja:'入力・資料から確認できた内容',es:'Confirmado a partir de la información proporcionada'})}</h2><div className="facts">{analysis.confirmedFacts.map((fact,index)=><label key={`${fact.label}-${index}`}><span>{fact.label}</span><b>{fact.value}</b></label>)}</div></section>
+        <section className="review-card"><h2>{ui({en:'What you explained',ja:'あなたが説明した内容',es:'Lo que explicaste'})}</h2><ul className="statement-list">{analysis.userStatements.map((statement,index)=><li key={`${statement}-${index}`}>{statement}</li>)}</ul></section>
+        <section className="review-card outcome"><h2>{ui({en:'Requested outcome',ja:'希望する対応',es:'Resultado solicitado'})}</h2><strong>{analysis.requestedOutcome}</strong></section>
+      </>}
       <div className="workflow-actions"><button onClick={()=>go('intake')}>← {t.back}</button><button className="primary" disabled={!canCreateInquiry} onClick={()=>go('draft')}>{language==='ja'?'問い合わせ文を作成':'Create inquiry'} →</button></div>
     </main>
   )
