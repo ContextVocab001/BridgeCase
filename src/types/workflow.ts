@@ -86,6 +86,22 @@ export type ChargeLabelSelection = {
   reason: string
 }
 
+export type ChargeAmountGroup = {
+  unitAmount: number
+  count: number
+  subtotal: number
+}
+
+export type ChargeAggregation = {
+  selectedLabel: string
+  currencyCode: string
+  currencySymbol: string
+  lineCount: number
+  totalAmount: number
+  amountGroups: ChargeAmountGroup[]
+  evidenceLines: string[]
+}
+
 export type ChargeEvidence = {
   label: string
   unitAmount?: MoneyValue

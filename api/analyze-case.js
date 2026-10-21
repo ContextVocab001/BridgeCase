@@ -9,6 +9,31 @@ function search(label){return `https://www.google.com/search?q=${encodeURICompon
 function urlsIn(text){return new Set((str(text).match(/https?:\/\/[^\s<>"')\]]+/gi)||[]).map(x=>x.replace(/[.,;:!?]+$/,'')))}
 function isUnrelatedIntermediary(label){return /(?:clover|stripe|square|adyen|braintree|worldpay|fiserv|first data|toast|lightspeed|shopify payments|visa|mastercard|american express|amex|discover|card issuer|payment processor|payment gateway|pos support|決済代行|決済処理|カード会社|カードブランド|銀行|pos事業者|posサポート)/i.test(str(label))}
 function cleanDraftText(value){return str(value).split(/\r?\n/).filter(line=>!/^\s*(?:\[?your name\]?|\[?your contact information\]?|name\s*[:：]\s*|contact information\s*[:：]\s*)\s*$/i.test(line)).join('\n').replace(/\n{3,}/g,'\n\n').trim()}
+function detectDocumentCurrency(text){
+  const value=str(text)
+  if(/\$|\bUSD\b/i.test(value))return{code:'USD',symbol:'$'}
+  if(/€|\bEUR\b/i.test(value))return{code:'EUR',symbol:'€'}
+  if(/£|\bGBP\b/i.test(value))return{code:'GBP',symbol:'£'}
+  if(/¥|￥|\bJPY\b|円/.test(value))return{code:'JPY',symbol:'¥'}
+  return{code:'',symbol:''}
+}
+function parseTrailingAmount(line){
+  const match=str(line).match(/([$€£¥￥]?\s*-?\d{1,3}(?:,\d{3})*(?:\.\d{2})|[$€£¥￥]?\s*-?\d+\.\d{2})\s*(?:USD|EUR|GBP|JPY)?\s*$/i)
+  if(!match)return null
+  const amount=Number(match[1].replace(/[$€£¥￥,\s]/g,''))
+  return Number.isFinite(amount)?Math.round(amount*100)/100:null
+}
+function aggregateSelectedCharge(documentText,selectedLabel){
+  const label=str(selectedLabel),currency=detectDocumentCurrency(documentText)
+  if(!label)return{selectedLabel:'',currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:0,totalAmount:0,amountGroups:[],evidenceLines:[]}
+  const evidenceLines=str(documentText).split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(line=>line&&line.includes(label)&&parseTrailingAmount(line)!==null)
+  const amounts=evidenceLines.map(line=>parseTrailingAmount(line)).filter(amount=>amount!==null)
+  const grouped=new Map()
+  for(const amount of amounts){const key=amount.toFixed(2),current=grouped.get(key)||{unitAmount:amount,count:0,subtotal:0};current.count+=1;current.subtotal=Math.round((current.subtotal+amount)*100)/100;grouped.set(key,current)}
+  const amountGroups=[...grouped.values()]
+  const totalAmount=Math.round(amounts.reduce((sum,amount)=>sum+amount,0)*100)/100
+  return{selectedLabel:label,currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:evidenceLines.length,totalAmount,amountGroups,evidenceLines}
+}
 function normalize(raw,model,sourceText=''){
   const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[]
   const missing=Array.isArray(raw?.readiness?.missingFields)?raw.readiness.missingFields.map(x=>({key:str(x?.key),label:str(x?.label),reason:str(x?.reason),alternatives:arr(x?.alternatives)})).filter(x=>x.key&&x.label):[]
@@ -94,6 +119,15 @@ ${documentText}`
       const confidence=['high','medium','low'].includes(str(selected?.confidence))?str(selected.confidence):'low'
       if(selectedLabel&&(!documentText.includes(selectedLabel)||!documentQuotes.length)){throw new Error('AI selected a charge label without exact document evidence.')}
       res.status(200).json({selectedLabel,documentQuotes,userClaimCodes,confidence,reason:str(selected?.reason)});return
+    }
+    if(i.mode==='aggregate-selected-charge'){
+      const selectedLabel=str(i.selectedLabel)
+      const documentText=str(i.documentText)
+      if(!selectedLabel||!documentText){res.status(400).json({error:'Selected charge label and OCR text are required.'});return}
+      if(!documentText.includes(selectedLabel)){res.status(400).json({error:'Selected charge label was not found in OCR text.'});return}
+      const aggregation=aggregateSelectedCharge(documentText,selectedLabel)
+      if(!aggregation.lineCount){res.status(422).json({error:'No amount-bearing OCR lines matched the selected charge label.'});return}
+      res.status(200).json(aggregation);return
     }
     if(i.mode==='translate'){
       if(!str(i.approvedSubject)||!str(i.approvedBody)){res.status(400).json({error:'Approved text is required.'});return}

@@ -1,5 +1,5 @@
 import type { LanguageCode } from '../config/languages'
-import type { ChargeLabelSelection, UserInputStructure } from '../types/workflow'
+import type { ChargeAggregation, ChargeLabelSelection, UserInputStructure } from '../types/workflow'
 export type AppLanguage = 'en' | 'ja' | 'es'
 export type UploadedSource = { name: string; type: string; size: number; text?: string }
 export type OcrPage = { page: number; text: string; lines: string[] }
@@ -30,7 +30,13 @@ export type SelectChargeLabelInput = {
   userStructure: UserInputStructure
   documentText: string
 }
-export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string> }
+
+export type AggregateSelectedChargeInput = {
+  interfaceLanguage: LanguageCode
+  selectedLabel: string
+  documentText: string
+}
+export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string> }
 
 async function readJson(response: Response) {
   const raw = await response.text()
@@ -50,6 +56,7 @@ async function post(input: AnalyzeCaseInput) {
 export async function analyzeCase(input: AnalyzeCaseInput): Promise<CaseAnalysis> { return post({...input,mode:'analyze'}) }
 export async function structureUserInput(input: StructureUserInputInput): Promise<UserInputStructure> { return post({...input,mode:'structure-user-input',originalMessage:'',userRequest:input.userText,recipientLanguage:input.draftLanguage,documents:[]}) }
 export async function selectChargeLabel(input: SelectChargeLabelInput): Promise<ChargeLabelSelection> { return post({...input,mode:'select-charge-label',originalMessage:'',userRequest:input.userStructure.originalText,recipientLanguage:input.interfaceLanguage,documents:[]}) }
+export async function aggregateSelectedCharge(input: AggregateSelectedChargeInput): Promise<ChargeAggregation> { return post({...input,mode:'aggregate-selected-charge',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
 export async function translateApprovedDraft(input: AnalyzeCaseInput): Promise<{subject:string;body:string}> { return post({...input,mode:'translate'}) }
 export async function runOcr(images:string[]):Promise<OcrResult> {
   if (!images.length) return { text:'', pages:[] }
