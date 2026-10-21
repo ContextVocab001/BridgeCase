@@ -1,5 +1,7 @@
 export type AppLanguage = 'en' | 'ja' | 'es'
 export type UploadedSource = { name: string; type: string; size: number; text?: string }
+export type OcrPage = { page: number; text: string; lines: string[] }
+export type OcrResult = { text: string; pages: OcrPage[] }
 export type CaseFact = { label: string; value: string; source?: 'document' | 'message' | 'user' }
 export type MissingField = { key: string; label: string; reason: string; alternatives?: string[] }
 export type ContactCandidate = { label: string; url: string; reason: string; kind: 'official-site' | 'contact-form' | 'email' | 'search'; recommended?: boolean }
@@ -33,12 +35,18 @@ async function post(input: AnalyzeCaseInput) {
 }
 export async function analyzeCase(input: AnalyzeCaseInput): Promise<CaseAnalysis> { return post({...input,mode:'analyze'}) }
 export async function translateApprovedDraft(input: AnalyzeCaseInput): Promise<{subject:string;body:string}> { return post({...input,mode:'translate'}) }
-export async function runOcr(images:string[]):Promise<{text:string;pages:{text:string}[]}> {
+export async function runOcr(images:string[]):Promise<OcrResult> {
   if (!images.length) return { text:'', pages:[] }
   const response = await fetch('/api/nvidia-ocr-test', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({images}) })
   const payload = await readJson(response)
   if (!response.ok) throw new Error(payload?.message ?? `OCR request failed (${response.status}).`)
   if (!payload || typeof payload.text !== 'string' || !Array.isArray(payload.pages)) throw new Error('OCR returned an unexpected response.')
   if (!payload.text.trim()) throw new Error('OCR completed, but no readable text was found in the uploaded file.')
-  return payload
+  const pages: OcrPage[] = payload.pages.map((page: unknown, index: number) => {
+    const value = page && typeof page === 'object' ? page as Record<string, unknown> : {}
+    const text = typeof value.text === 'string' ? value.text : ''
+    const lines = Array.isArray(value.lines) ? value.lines.filter((line): line is string => typeof line === 'string' && Boolean(line.trim())) : text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+    return { page:typeof value.page === 'number' ? value.page : index + 1, text, lines }
+  })
+  return { text:payload.text, pages }
 }

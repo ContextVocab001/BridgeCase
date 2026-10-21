@@ -72,7 +72,8 @@ export default async function handler(request, response) {
         return
       }
       const text = [...new Set(collect(payload))].join('\n')
-      pages.push({ text })
+      const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+      pages.push({ page:index + 1, text, lines })
     }
 
     const text = pages.map(page => page.text).filter(Boolean).join('\n\n--- PAGE ---\n\n')

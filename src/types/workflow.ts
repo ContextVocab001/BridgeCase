@@ -35,6 +35,23 @@ export type SourceEvidence = {
   rawText: string
 }
 
+export type OcrSourceLine = {
+  page: number
+  line: number
+  rawText: string
+}
+
+export type OcrSourcePage = {
+  page: number
+  rawText: string
+  lines: OcrSourceLine[]
+}
+
+export type OcrSourceDocument = {
+  fullText: string
+  pages: OcrSourcePage[]
+}
+
 export type NormalizedClaim = {
   code: string
   source: 'user'
