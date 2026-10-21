@@ -1,6 +1,6 @@
 const URL='https://api.tokenfactory.nebius.com/v1/chat/completions'
 const MODEL='nvidia/Nemotron-3_5-Lightning'
-const names={en:'English',ja:'Japanese',es:'Spanish'}
+const names={en:'English',ja:'Japanese',es:'Spanish','zh-CN':'Simplified Chinese','zh-TW':'Traditional Chinese','hi-IN':'Hindi'}
 const str=x=>typeof x==='string'?x.trim():''
 const arr=x=>Array.isArray(x)?x.map(str).filter(Boolean):[]
 function parse(content){const raw=typeof content==='string'?content:Array.isArray(content)?content.map(x=>typeof x==='string'?x:x?.text||'').join('\n'):'';const text=raw.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/```(?:json)?/gi,'').trim();try{return JSON.parse(text)}catch{}const a=text.indexOf('{'),b=text.lastIndexOf('}');if(a>=0&&b>a)return JSON.parse(text.slice(a,b+1));throw new Error('Invalid AI JSON')}
@@ -33,6 +33,33 @@ export default async function handler(req,res){
   if(!key){res.status(503).json({error:'NEBIUS_API_KEY is not configured.'});return}
   try{
     const i=req.body||{},model=process.env.NEBIUS_MODEL||MODEL,ui=names[i.interfaceLanguage]||'English',recipient=names[i.recipientLanguage]||'English'
+    if(i.mode==='structure-user-input'){
+      const userText=str(i.userText||i.userRequest)
+      if(!userText){res.status(400).json({error:'User explanation is required.'});return}
+      const structureSystem=`You structure only the user's own explanation. Return JSON only.
+OUTPUT SHAPE:
+{"sourceLanguage":"","claims":[{"code":"","statement":"","sourceQuote":""}],"requestedAction":{"code":"REFUND|EXPLANATION|CORRECTION|CANCELLATION|REPLACEMENT|OTHER","statement":""},"tone":"polite-neutral"}
+RULES:
+- Use only USER_TEXT. Do not use documents, OCR text, merchant data, prior cases, or general knowledge.
+- Preserve the user's meaning, negation, uncertainty, and requested action.
+- Each claim must be something the user explicitly stated. sourceQuote must be a short exact quote from USER_TEXT.
+- statement and requestedAction.statement must be written in ${ui}.
+- Keep claims concise and non-duplicative.
+- Do not calculate amounts, dates, quantities, nights, days, taxes, or totals.
+- Do not invent organization names, transaction details, identifiers, personal details, or evidence.
+- Do not add evaluative or accusatory wording such as unfair, fraudulent, unauthorized, improper, illegal, double charged, or double taxed unless the user explicitly used that characterization.
+- requestedAction.code describes only what the user asked the recipient to do.
+- tone must always be polite-neutral in this step.
+- Do not write an inquiry, salutation, subject, closing, or translation.`
+      const structured=await call(key,model,[{role:'system',content:structureSystem},{role:'user',content:`USER_TEXT:
+${userText}`}],1400,0)
+      const allowedActions=new Set(['REFUND','EXPLANATION','CORRECTION','CANCELLATION','REPLACEMENT','OTHER'])
+      const claims=Array.isArray(structured?.claims)?structured.claims.map(x=>({code:str(x?.code).toUpperCase().replace(/[^A-Z0-9_]/g,'_')||'USER_STATEMENT',statement:str(x?.statement),sourceQuote:str(x?.sourceQuote)})).filter(x=>x.statement&&x.sourceQuote&&userText.includes(x.sourceQuote)).slice(0,12):[]
+      const actionCode=str(structured?.requestedAction?.code).toUpperCase()
+      const requestedAction={code:allowedActions.has(actionCode)?actionCode:'OTHER',statement:str(structured?.requestedAction?.statement)}
+      if(!claims.length||!requestedAction.statement){throw new Error('AI could not structure the user explanation. Please try again.')}
+      res.status(200).json({sourceLanguage:str(i.draftLanguage||i.interfaceLanguage)||'en',originalText:userText,claims,requestedAction,tone:'polite-neutral'});return
+    }
     if(i.mode==='translate'){
       if(!str(i.approvedSubject)||!str(i.approvedBody)){res.status(400).json({error:'Approved text is required.'});return}
       const translationSystem=`You convert the CURRENT approved consumer inquiry from ${ui} to ${recipient}. Return JSON only as {"subject":"","body":""}.

@@ -1,3 +1,5 @@
+import type { LanguageCode } from '../config/languages'
+import type { UserInputStructure } from '../types/workflow'
 export type AppLanguage = 'en' | 'ja' | 'es'
 export type UploadedSource = { name: string; type: string; size: number; text?: string }
 export type OcrPage = { page: number; text: string; lines: string[] }
@@ -16,7 +18,13 @@ export type CaseAnalysis = {
   draft: { subject: string; body: string }
   meta: { mode: 'nebius'; model?: string }
 }
-export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate'; originalMessage: string; userRequest: string; interfaceLanguage: AppLanguage; recipientLanguage: AppLanguage; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string> }
+
+export type StructureUserInputInput = {
+  userText: string
+  interfaceLanguage: LanguageCode
+  draftLanguage: LanguageCode
+}
+export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string> }
 
 async function readJson(response: Response) {
   const raw = await response.text()
@@ -34,6 +42,7 @@ async function post(input: AnalyzeCaseInput) {
   return payload
 }
 export async function analyzeCase(input: AnalyzeCaseInput): Promise<CaseAnalysis> { return post({...input,mode:'analyze'}) }
+export async function structureUserInput(input: StructureUserInputInput): Promise<UserInputStructure> { return post({...input,mode:'structure-user-input',originalMessage:'',userRequest:input.userText,recipientLanguage:input.draftLanguage,documents:[]}) }
 export async function translateApprovedDraft(input: AnalyzeCaseInput): Promise<{subject:string;body:string}> { return post({...input,mode:'translate'}) }
 export async function runOcr(images:string[]):Promise<OcrResult> {
   if (!images.length) return { text:'', pages:[] }

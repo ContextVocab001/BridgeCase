@@ -58,6 +58,24 @@ export type NormalizedClaim = {
   originalText?: string
 }
 
+export type StructuredUserClaim = {
+  code: string
+  statement: string
+  sourceQuote: string
+  source: 'user'
+}
+
+export type UserInputStructure = {
+  sourceLanguage: LanguageCode
+  originalText: string
+  claims: StructuredUserClaim[]
+  requestedAction: {
+    code: RequestedActionCode
+    statement: string
+  }
+  tone: 'polite-neutral'
+}
+
 export type ChargeEvidence = {
   label: string
   unitAmount?: MoneyValue
