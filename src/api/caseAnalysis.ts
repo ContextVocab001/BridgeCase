@@ -1,5 +1,5 @@
 import type { LanguageCode } from '../config/languages'
-import type { ChargeAggregation, ChargeLabelSelection, UserInputStructure } from '../types/workflow'
+import type { CaseContext, CasePreparation, CaseReviewData, CaseType, CaseTypeClassification, ChargeAggregation, ChargeLabelSelection, IdentifierSelection, UserInputStructure } from '../types/workflow'
 export type AppLanguage = 'en' | 'ja' | 'es'
 export type UploadedSource = { name: string; type: string; size: number; text?: string }
 export type OcrPage = { page: number; text: string; lines: string[] }
@@ -36,7 +36,32 @@ export type AggregateSelectedChargeInput = {
   selectedLabel: string
   documentText: string
 }
-export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string> }
+
+export type SelectPrimaryIdentifierInput = {
+  interfaceLanguage: LanguageCode
+  caseType: CaseType
+  documentText: string
+}
+
+export type ClassifyCaseTypeInput = {
+  interfaceLanguage: LanguageCode
+  userStructure: UserInputStructure
+  documentText: string
+}
+
+export type ExtractCaseContextInput = {
+  interfaceLanguage: LanguageCode
+  caseType: CaseType
+  documentText: string
+}
+
+export type PrepareCaseInput = {
+  interfaceLanguage: LanguageCode
+  draftLanguage: LanguageCode
+  userText: string
+  documentText: string
+}
+export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string> }
 
 async function readJson(response: Response) {
   const raw = await response.text()
@@ -57,6 +82,40 @@ export async function analyzeCase(input: AnalyzeCaseInput): Promise<CaseAnalysis
 export async function structureUserInput(input: StructureUserInputInput): Promise<UserInputStructure> { return post({...input,mode:'structure-user-input',originalMessage:'',userRequest:input.userText,recipientLanguage:input.draftLanguage,documents:[]}) }
 export async function selectChargeLabel(input: SelectChargeLabelInput): Promise<ChargeLabelSelection> { return post({...input,mode:'select-charge-label',originalMessage:'',userRequest:input.userStructure.originalText,recipientLanguage:input.interfaceLanguage,documents:[]}) }
 export async function aggregateSelectedCharge(input: AggregateSelectedChargeInput): Promise<ChargeAggregation> { return post({...input,mode:'aggregate-selected-charge',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
+export async function classifyCaseType(input: ClassifyCaseTypeInput): Promise<CaseTypeClassification> { return post({...input,mode:'classify-case-type',originalMessage:'',userRequest:input.userStructure.originalText,recipientLanguage:input.interfaceLanguage,documents:[]}) }
+export async function extractCaseContext(input: ExtractCaseContextInput): Promise<CaseContext> { return post({...input,mode:'extract-case-context',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
+export async function selectPrimaryIdentifier(input: SelectPrimaryIdentifierInput): Promise<IdentifierSelection> { return post({...input,mode:'select-primary-identifier',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
+export async function prepareStructuredCase(input: PrepareCaseInput): Promise<CasePreparation> {
+  const userStructure = await structureUserInput({ userText:input.userText, interfaceLanguage:input.interfaceLanguage, draftLanguage:input.draftLanguage })
+  const caseClassification = await classifyCaseType({ interfaceLanguage:input.interfaceLanguage, userStructure, documentText:input.documentText })
+  const caseContext = await extractCaseContext({ interfaceLanguage:input.interfaceLanguage, caseType:caseClassification.caseType, documentText:input.documentText })
+  const chargeSelection = await selectChargeLabel({ interfaceLanguage:input.interfaceLanguage, userStructure, documentText:input.documentText })
+  const chargeAggregation = chargeSelection.selectedLabel ? await aggregateSelectedCharge({ interfaceLanguage:input.interfaceLanguage, selectedLabel:chargeSelection.selectedLabel, documentText:input.documentText }) : null
+  const identifierSelection = await selectPrimaryIdentifier({ interfaceLanguage:input.interfaceLanguage, caseType:caseClassification.caseType, documentText:input.documentText })
+  return { userStructure, caseClassification, caseContext, chargeSelection, chargeAggregation, identifierSelection }
+}
+
+export function buildCaseReviewData(preparation: CasePreparation): CaseReviewData {
+  const confirmedFacts: CaseReviewData['confirmedFacts'] = []
+  if (preparation.caseContext.organizationName) confirmedFacts.push({ key:'organization', label:'Organization', value:preparation.caseContext.organizationName, source:'document' })
+  if (preparation.caseContext.startDate) confirmedFacts.push({ key:'startDate', label:'Start date', value:preparation.caseContext.startDate, source:'document' })
+  if (preparation.caseContext.endDate) confirmedFacts.push({ key:'endDate', label:'End date', value:preparation.caseContext.endDate, source:'document' })
+  const aggregation = preparation.chargeAggregation
+  if (aggregation) {
+    confirmedFacts.push({ key:'chargeLabel', label:'Disputed item', value:aggregation.selectedLabel, source:'document' })
+    confirmedFacts.push({ key:'chargeSummary', label:'Charge summary', value:JSON.stringify({ currencyCode:aggregation.currencyCode, currencySymbol:aggregation.currencySymbol, lineCount:aggregation.lineCount, totalAmount:aggregation.totalAmount, amountGroups:aggregation.amountGroups }), source:'program' })
+  }
+  const primary = preparation.identifierSelection.primaryIdentifier
+  if (primary) confirmedFacts.push({ key:'primaryIdentifier', label:primary.label, value:primary.value, source:'document' })
+  return {
+    caseType:preparation.caseClassification.caseType,
+    confirmedFacts,
+    userStatements:preparation.userStructure.claims.map(claim=>claim.statement),
+    requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.totalAmount, currency:aggregation?.currencyCode },
+    primaryIdentifier:primary,
+    readiness:{ ready:Boolean(preparation.caseContext.organizationName&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.organizationName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
+  }
+}
 export async function translateApprovedDraft(input: AnalyzeCaseInput): Promise<{subject:string;body:string}> { return post({...input,mode:'translate'}) }
 export async function runOcr(images:string[]):Promise<OcrResult> {
   if (!images.length) return { text:'', pages:[] }

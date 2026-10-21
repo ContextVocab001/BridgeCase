@@ -34,6 +34,55 @@ function aggregateSelectedCharge(documentText,selectedLabel){
   const totalAmount=Math.round(amounts.reduce((sum,amount)=>sum+amount,0)*100)/100
   return{selectedLabel:label,currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:evidenceLines.length,totalAmount,amountGroups,evidenceLines}
 }
+const IDENTIFIER_RULES={
+  hotel:[
+    {type:'FOLIO_NUMBER',label:'Folio Number',pattern:/\bFolio\s*(?:Number|No\.?|#)?\s*[:#-]?\s*([A-Z0-9-]{3,})/i,priority:1},
+    {type:'CONFIRMATION_NUMBER',label:'Confirmation Number',pattern:/\bConfirmation\s*(?:Number|No\.?|#|Code)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:2},
+    {type:'RESERVATION_NUMBER',label:'Reservation Number',pattern:/\bReservation\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3},
+    {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:4}
+  ],
+  'rental-car':[
+    {type:'RENTAL_AGREEMENT_NUMBER',label:'Rental Agreement Number',pattern:/\b(?:Rental\s+Agreement|Rental\s+Record|Agreement)\s*(?:Number|No\.?|#)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:1},
+    {type:'RESERVATION_NUMBER',label:'Reservation Number',pattern:/\bReservation\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:2},
+    {type:'CONFIRMATION_NUMBER',label:'Confirmation Number',pattern:/\bConfirmation\s*(?:Number|No\.?|#|Code)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3},
+    {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:4}
+  ],
+  airline:[
+    {type:'TICKET_NUMBER',label:'Ticket Number',pattern:/\bTicket\s*(?:Number|No\.?|#)?\s*[:#-]?\s*([A-Z0-9-]{6,})/i,priority:1},
+    {type:'PNR',label:'PNR',pattern:/\b(?:PNR|Booking\s+Reference)\s*[:#-]?\s*([A-Z0-9]{5,8})/i,priority:2},
+    {type:'CONFIRMATION_NUMBER',label:'Confirmation Number',pattern:/\bConfirmation\s*(?:Number|No\.?|#|Code)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3}
+  ],
+  retail:[
+    {type:'ORDER_NUMBER',label:'Order Number',pattern:/\bOrder\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:1},
+    {type:'INVOICE_NUMBER',label:'Invoice Number',pattern:/\bInvoice\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:2},
+    {type:'TRANSACTION_ID',label:'Transaction ID',pattern:/\bTransaction\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3},
+    {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:4}
+  ],
+  payment:[
+    {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:1},
+    {type:'TRANSACTION_ID',label:'Transaction ID',pattern:/\bTransaction\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:2},
+    {type:'RECEIPT_NUMBER',label:'Receipt Number',pattern:/\bReceipt\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3}
+  ]
+}
+const GENERIC_IDENTIFIER_RULES=[
+  {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:50},
+  {type:'TRANSACTION_ID',label:'Transaction ID',pattern:/\bTransaction\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:51},
+  {type:'CONFIRMATION_NUMBER',label:'Confirmation Number',pattern:/\bConfirmation\s*(?:Number|No\.?|#|Code)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:52}
+]
+function selectPrimaryIdentifier(documentText,caseType){
+  const text=str(documentText),rules=[...(IDENTIFIER_RULES[caseType]||[]),...GENERIC_IDENTIFIER_RULES],seen=new Set(),candidates=[]
+  for(const rule of rules){
+    const match=rule.pattern.exec(text)
+    if(!match)continue
+    const value=str(match[1]),key=`${rule.type}|${value}`
+    if(!value||seen.has(key))continue
+    seen.add(key)
+    const sourceLine=text.split('\n').map(line=>line.replace(/\r$/,'').trim()).find(line=>line.includes(match[0]))||str(match[0])
+    candidates.push({type:rule.type,label:rule.label,value,priority:rule.priority,source:'document',sourceLine})
+  }
+  candidates.sort((a,b)=>a.priority-b.priority)
+  return{caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:[]}
+}
 function normalize(raw,model,sourceText=''){
   const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[]
   const missing=Array.isArray(raw?.readiness?.missingFields)?raw.readiness.missingFields.map(x=>({key:str(x?.key),label:str(x?.label),reason:str(x?.reason),alternatives:arr(x?.alternatives)})).filter(x=>x.key&&x.label):[]
@@ -128,6 +177,72 @@ ${documentText}`
       const aggregation=aggregateSelectedCharge(documentText,selectedLabel)
       if(!aggregation.lineCount){res.status(422).json({error:'No amount-bearing OCR lines matched the selected charge label.'});return}
       res.status(200).json(aggregation);return
+    }
+    if(i.mode==='extract-case-context'){
+      const documentText=str(i.documentText),caseType=str(i.caseType)||'other'
+      if(!documentText){res.status(400).json({error:'OCR text is required.'});return}
+      const contextSystem=`Extract only the organization and transaction/service date range from OCR_TEXT. Return JSON only.
+OUTPUT SHAPE:
+{"organizationName":"","organizationQuote":"","startDate":"","endDate":"","dateQuotes":[""]}
+RULES:
+- Use only OCR_TEXT. Do not use outside knowledge.
+- organizationName must be the exact organization/property/company name printed in OCR_TEXT, without address, phone, URL, card brand, processor, or legal explanation.
+- organizationQuote must be one exact OCR_TEXT line containing the organizationName.
+- For hotel, rental-car, and airline cases, startDate/endDate are the printed service/usage dates when clearly labeled. For other cases, use transaction/order/service dates only when clearly supported.
+- Keep dates in the exact source format. Do not calculate duration, nights, days, or quantities.
+- dateQuotes must contain exact OCR_TEXT lines supporting the dates.
+- If a field is not clearly supported, return an empty string or empty array.
+- Do not extract charges, totals, identifiers, personal names, room numbers, card details, addresses, or write a message.
+- CURRENT_CASE_TYPE is ${caseType}.`
+      const extracted=await call(key,model,[{role:'system',content:contextSystem},{role:'user',content:`OCR_TEXT:
+${documentText}`}],1000,0)
+      const documentLines=documentText.split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
+      const organizationName=str(extracted?.organizationName)
+      const organizationQuote=str(extracted?.organizationQuote)
+      const validOrganization=organizationName&&documentLines.includes(organizationQuote)&&organizationQuote.includes(organizationName)
+      const dateQuotes=arr(extracted?.dateQuotes).filter(quote=>documentLines.includes(quote)).slice(0,3)
+      const startDate=str(extracted?.startDate),endDate=str(extracted?.endDate)
+      const supportedDate=value=>!value||dateQuotes.some(quote=>quote.includes(value))
+      res.status(200).json({organizationName:validOrganization?organizationName:'',organizationQuote:validOrganization?organizationQuote:'',startDate:supportedDate(startDate)?startDate:'',endDate:supportedDate(endDate)?endDate:'',dateQuotes});return
+    }
+    if(i.mode==='classify-case-type'){
+      const documentText=str(i.documentText)
+      const userStructure=i.userStructure&&typeof i.userStructure==='object'?i.userStructure:null
+      if(!documentText||!userStructure){res.status(400).json({error:'OCR text and structured user explanation are required.'});return}
+      const classificationSystem=`Classify the CURRENT case into exactly one category. Return JSON only.
+OUTPUT SHAPE:
+{"caseType":"hotel|rental-car|airline|retail|restaurant|subscription|payment|other","confidence":"high|medium|low","documentQuotes":[""],"reason":""}
+RULES:
+- Use only OCR_TEXT and USER_STRUCTURE.
+- Select the business/transaction category, not the user's preferred remedy.
+- hotel includes hotel, lodging, motel, resort, and accommodation folios.
+- rental-car includes vehicle rental agreements and return receipts.
+- airline includes flight tickets, PNRs, baggage, and airline itineraries.
+- retail includes store, ecommerce, order, invoice, and shipped-goods transactions.
+- restaurant includes dining and food-service receipts.
+- subscription includes recurring membership and digital-service billing.
+- payment is only for a generic payment/processor receipt when no more specific business category is supported.
+- other is required when evidence is insufficient.
+- documentQuotes must contain 1 to 3 exact lines from OCR_TEXT supporting the category.
+- Do not identify a charge, count lines, calculate amounts, select an identifier, draft a message, or translate.
+- reason must be concise and written in ${ui}.`
+      const classified=await call(key,model,[{role:'system',content:classificationSystem},{role:'user',content:`USER_STRUCTURE:
+${JSON.stringify(userStructure)}
+
+OCR_TEXT:
+${documentText}`}],900,0)
+      const allowedTypes=new Set(['hotel','rental-car','airline','retail','restaurant','subscription','payment','other'])
+      const caseType=allowedTypes.has(str(classified?.caseType))?str(classified.caseType):'other'
+      const documentLines=documentText.split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
+      const documentQuotes=arr(classified?.documentQuotes).filter(quote=>documentLines.includes(quote)).slice(0,3)
+      const confidence=['high','medium','low'].includes(str(classified?.confidence))?str(classified.confidence):'low'
+      res.status(200).json({caseType,confidence,documentQuotes,reason:str(classified?.reason)});return
+    }
+    if(i.mode==='select-primary-identifier'){
+      const documentText=str(i.documentText),caseType=str(i.caseType)||'other'
+      if(!documentText){res.status(400).json({error:'OCR text is required.'});return}
+      const result=selectPrimaryIdentifier(documentText,caseType)
+      res.status(200).json(result);return
     }
     if(i.mode==='translate'){
       if(!str(i.approvedSubject)||!str(i.approvedBody)){res.status(400).json({error:'Approved text is required.'});return}
