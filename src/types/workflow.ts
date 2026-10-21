@@ -76,6 +76,16 @@ export type UserInputStructure = {
   tone: 'polite-neutral'
 }
 
+export type ChargeSelectionConfidence = 'high' | 'medium' | 'low'
+
+export type ChargeLabelSelection = {
+  selectedLabel: string
+  documentQuotes: string[]
+  userClaimCodes: string[]
+  confidence: ChargeSelectionConfidence
+  reason: string
+}
+
 export type ChargeEvidence = {
   label: string
   unitAmount?: MoneyValue

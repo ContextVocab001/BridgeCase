@@ -54,11 +54,46 @@ RULES:
       const structured=await call(key,model,[{role:'system',content:structureSystem},{role:'user',content:`USER_TEXT:
 ${userText}`}],1400,0)
       const allowedActions=new Set(['REFUND','EXPLANATION','CORRECTION','CANCELLATION','REPLACEMENT','OTHER'])
-      const claims=Array.isArray(structured?.claims)?structured.claims.map(x=>({code:str(x?.code).toUpperCase().replace(/[^A-Z0-9_]/g,'_')||'USER_STATEMENT',statement:str(x?.statement),sourceQuote:str(x?.sourceQuote)})).filter(x=>x.statement&&x.sourceQuote&&userText.includes(x.sourceQuote)).slice(0,12):[]
+      const claims=Array.isArray(structured?.claims)?structured.claims.map(x=>({code:str(x?.code).toUpperCase().replace(/[^A-Z0-9_]/g,'_')||'USER_STATEMENT',statement:str(x?.statement),sourceQuote:str(x?.sourceQuote),source:'user'})).filter(x=>x.statement&&x.sourceQuote&&userText.includes(x.sourceQuote)).slice(0,12):[]
       const actionCode=str(structured?.requestedAction?.code).toUpperCase()
       const requestedAction={code:allowedActions.has(actionCode)?actionCode:'OTHER',statement:str(structured?.requestedAction?.statement)}
       if(!claims.length||!requestedAction.statement){throw new Error('AI could not structure the user explanation. Please try again.')}
       res.status(200).json({sourceLanguage:str(i.draftLanguage||i.interfaceLanguage)||'en',originalText:userText,claims,requestedAction,tone:'polite-neutral'});return
+    }
+    if(i.mode==='select-charge-label'){
+      const userStructure=i.userStructure&&typeof i.userStructure==='object'?i.userStructure:null
+      const documentText=str(i.documentText)
+      if(!userStructure||!documentText){res.status(400).json({error:'Structured user explanation and OCR text are required.'});return}
+      const claims=Array.isArray(userStructure.claims)?userStructure.claims.map(x=>str(x?.statement)).filter(Boolean):[]
+      const requestedAction=str(userStructure?.requestedAction?.statement)
+      if(!claims.length||!requestedAction){res.status(400).json({error:'Structured user explanation is incomplete.'});return}
+      const selectionSystem=`Select only the document line-item label most directly related to the user's issue. Return JSON only.
+OUTPUT SHAPE:
+{"selectedLabel":"","documentQuotes":[""],"userClaimCodes":[""],"confidence":"high|medium|low","reason":""}
+RULES:
+- USER_STRUCTURE contains the user's already-validated claims and requested action. Do not reinterpret or strengthen them.
+- OCR_TEXT is evidence. Select a label only when it appears verbatim in OCR_TEXT.
+- selectedLabel must be the exact recurring or disputed line-item description as printed in OCR_TEXT, without a date, amount, currency, quantity, or calculated total.
+- documentQuotes must contain 1 to 5 exact OCR_TEXT lines that include selectedLabel.
+- userClaimCodes must contain only codes present in USER_STRUCTURE.claims that support the selection.
+- This step selects a label only. Do not count occurrences, calculate totals, infer nights/days, select identifiers, draft a message, translate, or judge whether the charge is valid.
+- Do not select payment methods, card brands, balances, grand totals, addresses, names, room numbers, authorization codes, or generic headers such as DATE, DESCRIPTION, CHARGES, CREDITS.
+- If no line item clearly matches, return selectedLabel as an empty string, documentQuotes as an empty array, confidence as low, and explain the missing match neutrally.
+- reason must be written in ${ui} and must not include new facts.`
+      const selectionUser=`USER_STRUCTURE:
+${JSON.stringify(userStructure)}
+
+OCR_TEXT:
+${documentText}`
+      const selected=await call(key,model,[{role:'system',content:selectionSystem},{role:'user',content:selectionUser}],1300,0)
+      const selectedLabel=str(selected?.selectedLabel)
+      const documentLines=documentText.split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
+      const documentQuotes=arr(selected?.documentQuotes).filter(quote=>documentLines.includes(quote)&&(!selectedLabel||quote.includes(selectedLabel))).slice(0,5)
+      const permittedCodes=new Set(Array.isArray(userStructure.claims)?userStructure.claims.map(x=>str(x?.code)).filter(Boolean):[])
+      const userClaimCodes=arr(selected?.userClaimCodes).filter(code=>permittedCodes.has(code))
+      const confidence=['high','medium','low'].includes(str(selected?.confidence))?str(selected.confidence):'low'
+      if(selectedLabel&&(!documentText.includes(selectedLabel)||!documentQuotes.length)){throw new Error('AI selected a charge label without exact document evidence.')}
+      res.status(200).json({selectedLabel,documentQuotes,userClaimCodes,confidence,reason:str(selected?.reason)});return
     }
     if(i.mode==='translate'){
       if(!str(i.approvedSubject)||!str(i.approvedBody)){res.status(400).json({error:'Approved text is required.'});return}
