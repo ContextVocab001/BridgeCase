@@ -235,6 +235,26 @@ function validateProtectedDraft(result,data,context='ai'){
   console.info('Protected draft validation passed',{context,allowedMoney:[...allowedMoney.keys()],actualMoney:[...actualMoney.keys()],identifier:data.primary?.value||'',dates:[...expectedDates(data)]})
   return{ok:true,subject,body}
 }
+function mailEnvelope(language){
+  if(language==='ja')return{greeting:'ご担当者様',closing:'ご確認のほど、よろしくお願いいたします。'}
+  if(language==='es')return{greeting:'Estimado equipo de atención al cliente:',closing:'Gracias por su atención.\n\nAtentamente,'}
+  return{greeting:'Dear Customer Care Team,',closing:'Thank you for your assistance.\n\nBest regards,'}
+}
+function containsEnvelopeText(text,language){
+  const value=normalizedProtected(text).toLowerCase()
+  const patterns=language==='ja'
+    ?['ご担当者様','ご確認のほど、よろしくお願いいたします','よろしくお願いいたします']
+    :language==='es'
+      ?['estimado equipo de atención al cliente','a quien corresponda','atentamente','saludos cordiales','gracias por su atención']
+      :['dear customer care team','dear customer service team','dear sir/madam','to whom it may concern','best regards','kind regards','regards,','sincerely','thank you for your assistance']
+  return patterns.some(pattern=>value.includes(pattern.toLowerCase()))
+}
+function composeMail(core,language){
+  const envelope=mailEnvelope(language)
+  const subject=str(core?.subject).trim()
+  const body=cleanDraftText(core?.body).trim()
+  return{subject,body:`${envelope.greeting}\n\n${body}\n\n${envelope.closing}`}
+}
 function safeProtectedDraft(data,language){
   const identifier=data.primary?`${data.primary.label}: ${data.primary.value}`:''
   const factLines=data.facts.map(x=>`${x.label}: ${x.value}`)
@@ -242,9 +262,9 @@ function safeProtectedDraft(data,language){
   const request=data.requested.statement
   const issueLabel=data.facts.find(x=>/charge|item|明細|cargo/i.test(x.label))?.value||''
   const subjectParts=[issueLabel,identifier].filter(Boolean)
-  if(language==='ja')return{subject:subjectParts.join(' / ')||'お問い合わせ',body:['ご担当者様','','以下の件についてお問い合わせいたします。','',identifier,...factLines,...statements,'',request,'','ご確認のほど、よろしくお願いいたします。'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
-  if(language==='es')return{subject:subjectParts.join(' / ')||'Consulta',body:['A quien corresponda:','','Me comunico en relación con el siguiente asunto.','',identifier,...factLines,...statements,'',request,'','Gracias por su ayuda.','Atentamente,'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
-  return{subject:subjectParts.join(' / ')||'Inquiry',body:['To whom it may concern,','','I am contacting you regarding the following matter.','',identifier,...factLines,...statements,'',request,'','Thank you for your assistance.','Best regards,'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
+  if(language==='ja')return{subject:subjectParts.join(' / ')||'お問い合わせ',body:['以下の件についてお問い合わせいたします。','',identifier,...factLines,...statements,'',request].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
+  if(language==='es')return{subject:subjectParts.join(' / ')||'Consulta',body:['Me comunico en relación con el siguiente asunto.','',identifier,...factLines,...statements,'',request].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
+  return{subject:subjectParts.join(' / ')||'Inquiry',body:['I am contacting you regarding the following matter.','',identifier,...factLines,...statements,'',request].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
 }
 export const config={maxDuration:60}
 export default async function handler(req,res){
@@ -262,19 +282,26 @@ You receive only FIXED_STRUCTURED_DATA. You do not receive OCR text.
 Treat every fact, amount, count, date, currency, identifier type, and identifier value as immutable.
 Use all supplied fixed values exactly as written. Do not calculate, translate, normalize, round, reformat, omit, duplicate, or invent any value.
 Do not add any number, date, amount, count, identifier, deadline, allegation, or request.
-Your only task is natural wording, ordering, greeting, and closing.
+Your only task is the natural wording and ordering of the core message.
+Do NOT write a greeting, salutation, closing, sign-off, sender name, or signature. The program adds those in a separate fixed layer.
 Keep user statements as user statements and confirmed facts as facts.
 Never output placeholders.`
       let lastReason=''
       for(let attempt=1;attempt<=2;attempt++){
         const retry=attempt===2?`\nPREVIOUS OUTPUT FAILED PROGRAMMATIC VALIDATION: ${lastReason}. Generate again from FIXED_STRUCTURED_DATA only.`:''
         const generated=await call(key,model,[{role:'system',content:draftSystem+retry},{role:'user',content:`FIXED_STRUCTURED_DATA:\n${fixedJson}`}],2200,0)
-        const checked=validateProtectedDraft(generated,data,`ai-attempt-${attempt}`)
+        if(containsEnvelopeText(generated?.body,ui)){
+          lastReason='AI output included a greeting, closing, or signature reserved for the fixed envelope layer.'
+          console.warn('Protected draft validation failed',{attempt,reason:lastReason});continue
+        }
+        const composed=composeMail(generated,ui)
+        const checked=validateProtectedDraft(composed,data,`ai-attempt-${attempt}`)
         if(checked.ok){res.status(200).json({subject:checked.subject,body:checked.body,generationMode:'ai',validationAttempts:attempt});return}
         lastReason=checked.reason
         console.warn('Protected draft validation failed',{attempt,reason:lastReason})
       }
-      const safe=safeProtectedDraft(data,str(i.interfaceLanguage)||'en')
+      const safeCore=safeProtectedDraft(data,str(i.interfaceLanguage)||'en')
+      const safe=composeMail(safeCore,str(i.interfaceLanguage)||'en')
       const checked=validateProtectedDraft(safe,data,'safe-template')
       if(!checked.ok)throw new Error(`Safe template validation failed: ${checked.reason}`)
       res.status(200).json({...safe,generationMode:'safe-template',validationAttempts:2});return
