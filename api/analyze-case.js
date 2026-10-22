@@ -320,21 +320,21 @@ export default async function handler(req,res){
   const key=process.env.NEBIUS_API_KEY
   if(!key){res.status(503).json({error:'NEBIUS_API_KEY is not configured.'});return}
   try{
-    const i=req.body||{},model=process.env.NEBIUS_MODEL||MODEL,ui=names[i.interfaceLanguage]||'English',recipient=names[i.recipientLanguage]||'English'
+    const i=req.body||{},model=process.env.NEBIUS_MODEL||MODEL,languageCode=['ja','es','en'].includes(i.interfaceLanguage)?i.interfaceLanguage:'en',ui=names[i.interfaceLanguage]||'English',recipient=names[i.recipientLanguage]||'English'
     if(i.mode==='generate-protected-draft'){
       const data=protectedDraftData(i.review)
       if(!data.facts.length||!data.statements.length||!data.requested.statement){res.status(400).json({error:'Confirmed case data is incomplete.'});return}
       const slots=draftSlots(data)
       if(!slots.GUEST_NAME||!slots.PRIMARY_IDENTIFIER){res.status(422).json({error:'Guest name and a reservation-identifying number are required before drafting.'});return}
       const fixedJson=JSON.stringify({...data,requiredPlaceholders:Object.keys(slots)})
-      const draftSystem=`Write a natural, concise consumer inquiry in ${ui}. Return JSON only as {"subject":"","body":""}.
+      const draftSystem=`Write a natural, complete consumer inquiry in ${ui}. The subject and body must both be written in ${ui}. Return JSON only as {"subject":"","body":""}.
 You receive only FIXED_STRUCTURED_DATA. You do not receive OCR text.
 Treat every fact, amount, count, date, currency, identifier type, and identifier value as immutable.
 Use the required placeholders exactly once each in the body: {{GUEST_NAME}}, {{PRIMARY_IDENTIFIER}}, and {{REFUND_AMOUNT}} only when listed in requiredPlaceholders. Do not write their actual values yourself.
 Use other confirmed facts only when they make the message more natural or clearer. Do not mechanically list facts. Do not include payment date, line count, unit price, breakdown, or secondary identifiers unless the user's issue directly concerns that item.
 Do not calculate, translate, normalize, round, reformat, or invent any value.
 Do not add any number, date, amount, count, identifier, deadline, allegation, or request.
-Your only task is the natural wording and ordering of the core message.
+Your only task is the natural wording and ordering of the core message. Write 2 to 3 short paragraphs and normally 3 to 6 complete sentences. Include a brief transaction context, the user's issue, and the requested resolution. Be concise, but do not compress the inquiry into a single sentence when enough confirmed information is available.
 Do NOT write a greeting, salutation, closing, sign-off, sender name, or signature. The program adds those in a separate fixed layer.
 Keep user statements as user statements and confirmed facts as facts.
 Never output placeholders.`
@@ -342,14 +342,14 @@ Never output placeholders.`
       for(let attempt=1;attempt<=2;attempt++){
         const retry=attempt===2?`\nPREVIOUS OUTPUT FAILED PROGRAMMATIC VALIDATION: ${lastReason}. Generate again from FIXED_STRUCTURED_DATA only.`:''
         const generated=await call(key,model,[{role:'system',content:draftSystem+retry},{role:'user',content:`FIXED_STRUCTURED_DATA:\n${fixedJson}`}],2200,0)
-        if(containsEnvelopeText(generated?.body,ui)){
+        if(containsEnvelopeText(generated?.body,languageCode)){
           lastReason='AI output included a greeting, closing, or signature reserved for the fixed envelope layer.'
           console.warn('Protected draft validation failed',{attempt,reason:lastReason});continue
         }
         const slotCheck=validateDraftSlots(generated,slots)
         if(!slotCheck.ok){lastReason=slotCheck.reason;console.warn('Protected draft validation failed',{attempt,reason:lastReason});continue}
         const filled=fillDraftSlots(generated,slots)
-        const composed=composeMail(filled,ui)
+        const composed=composeMail(filled,languageCode)
         const checked=validateProtectedDraft(composed,data,`ai-attempt-${attempt}`)
         if(checked.ok){res.status(200).json({subject:checked.subject,body:checked.body,generationMode:'ai',validationAttempts:attempt});return}
         lastReason=checked.reason
