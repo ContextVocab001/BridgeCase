@@ -283,6 +283,81 @@ function validateDraftSlots(core,slots){
   const unknown=[...combined.matchAll(/{{([A-Z0-9_]+)}}/g)].map(match=>match[1]).filter(key=>!(key in slots))
   return{ok:missing.length===0&&unknown.length===0,reason:missing.length?`Missing required placeholders: ${missing.join(', ')}`:unknown.length?`Unknown placeholders: ${unknown.join(', ')}`:''}
 }
+function subjectTopic(data,language){
+  const raw=normalizedProtected(data.facts.find(x=>x.key==='chargeLabel')?.value||'').toLowerCase()
+  const topics={
+    ja:[[/parking|駐車/,'駐車料金'],[/baggage|luggage|手荷物|荷物/,'手荷物料金'],[/cancell?ation|キャンセル/,'キャンセル料金'],[/delivery|shipping|配送|送料/,'配送費'],[/subscription|membership|会費|サブスクリプション/,'利用料金'],[/rental|fuel|gasoline|レンタル|燃料/,'レンタカー料金'],[/room|hotel|宿泊|客室/,'宿泊料金']],
+    es:[[/parking|駐車/,'cargo de estacionamiento'],[/baggage|luggage/,'cargo de equipaje'],[/delivery|shipping/,'cargo de envío'],[/rental|fuel|gasoline/,'cargo de alquiler']],
+    en:[[/parking|駐車/,'parking charge'],[/baggage|luggage/,'baggage charge'],[/delivery|shipping/,'delivery charge'],[/rental|fuel|gasoline/,'rental charge']]
+  }
+  const match=(topics[language]||topics.en).find(([pattern])=>pattern.test(raw))
+  return match?.[1]||(language==='ja'?'料金':language==='es'?'cargo':'charge')
+}
+function buildDeterministicSubject(data,language){
+  const topic=subjectTopic(data,language)
+  const action=str(data.requested?.code).toUpperCase()
+  if(language==='ja'){
+    if(action==='REFUND')return`${topic}の返金依頼`
+    if(action==='CORRECTION')return`${topic}の訂正依頼`
+    if(action==='CANCELLATION')return'キャンセルのお願い'
+    if(action==='EXPLANATION')return`${topic}についての確認依頼`
+    return'お問い合わせ'
+  }
+  if(language==='es'){
+    if(action==='REFUND')return`Solicitud de reembolso del ${topic}`
+    if(action==='CORRECTION')return`Solicitud de corrección del ${topic}`
+    if(action==='CANCELLATION')return'Solicitud de cancelación'
+    return'Consulta'
+  }
+  if(action==='REFUND')return`Request for a ${topic} refund`
+  if(action==='CORRECTION')return`Request to correct the ${topic}`
+  if(action==='CANCELLATION')return'Cancellation request'
+  if(action==='EXPLANATION')return`Request for clarification about the ${topic}`
+  return'Inquiry'
+}
+function paragraphSlots(data){
+  const guest=data.facts.find(x=>x.key==='guestName')?.value||''
+  const identifier=data.primary?.value||''
+  const identifierLabel=data.primary?.label||'Reference number'
+  const identity={GUEST_NAME:guest,PRIMARY_IDENTIFIER_LABEL:identifierLabel,PRIMARY_IDENTIFIER:identifier}
+  const issue={}
+  if(Number.isFinite(data.requested?.amount)&&data.requested.currency)issue.REFUND_AMOUNT=`${data.requested.currency} ${Number(data.requested.amount).toFixed(2)}`
+  return{identity,issue}
+}
+function paragraphTokenCheck(text,slots,paragraphName){
+  const value=cleanDraftText(text)
+  const missing=Object.keys(slots).filter(key=>(value.match(new RegExp(`{{${key}}}`,'g'))||[]).length!==1)
+  const unknown=[...value.matchAll(/{{([A-Z0-9_]+)}}/g)].map(match=>match[1]).filter(key=>!(key in slots))
+  return{ok:Boolean(value)&&!missing.length&&!unknown.length,reason:!value?`${paragraphName} is empty.`:missing.length?`${paragraphName} must contain each required placeholder exactly once: ${missing.join(', ')}`:unknown.length?`${paragraphName} contains unknown placeholders: ${unknown.join(', ')}`:''}
+}
+function fillParagraph(text,slots){
+  let value=cleanDraftText(text)
+  for(const[key,replacement]of Object.entries(slots))value=value.split(`{{${key}}}`).join(str(replacement))
+  return value.trim()
+}
+function composeStructuredMail(parts,data,language){
+  const subject=buildDeterministicSubject(data,language)
+  const identity=fillParagraph(parts.identityParagraph,parts.slots.identity)
+  const issue=fillParagraph(parts.issueRequestParagraph,parts.slots.issue)
+  return composeMail({subject,body:`${identity}\n\n${issue}`},language)
+}
+function safeStructuredParts(data,language,slots){
+  const label=slots.identity.PRIMARY_IDENTIFIER_LABEL
+  const statements=data.statements.join(language==='ja'?'。':'. ')
+  const request=data.requested.statement
+  if(language==='ja')return{
+    identityParagraph:`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。`,
+    issueRequestParagraph:`${statements}${statements&& !/[。.!?]$/.test(statements)?'。':''}${slots.issue.REFUND_AMOUNT?' この料金として請求された{{REFUND_AMOUNT}}について、返金をお願いいたします。':` ${request}`}`
+  }
+  if(language==='es')return{
+    identityParagraph:`Soy {{GUEST_NAME}} y mi {{PRIMARY_IDENTIFIER_LABEL}} es {{PRIMARY_IDENTIFIER}}.`,
+    issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${slots.issue.REFUND_AMOUNT?' Solicito el reembolso de {{REFUND_AMOUNT}}.':` ${request}`}`
+  }
+  return{
+    identityParagraph:`My name is {{GUEST_NAME}}, and my {{PRIMARY_IDENTIFIER_LABEL}} is {{PRIMARY_IDENTIFIER}}.`,
+    issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${slots.issue.REFUND_AMOUNT?' I am requesting a refund of {{REFUND_AMOUNT}}.':` ${request}`}`
+  }
+}
 function mailEnvelope(language){
   if(language==='ja')return{greeting:'ご担当者様',closing:'ご確認のほど、よろしくお願いいたします。'}
   if(language==='es')return{greeting:'Estimado equipo de atención al cliente:',closing:'Gracias por su atención.\n\nAtentamente,'}
@@ -324,40 +399,57 @@ export default async function handler(req,res){
     if(i.mode==='generate-protected-draft'){
       const data=protectedDraftData(i.review)
       if(!data.facts.length||!data.statements.length||!data.requested.statement){res.status(400).json({error:'Confirmed case data is incomplete.'});return}
-      const slots=draftSlots(data)
-      if(!slots.GUEST_NAME||!slots.PRIMARY_IDENTIFIER){res.status(422).json({error:'Guest name and a reservation-identifying number are required before drafting.'});return}
-      const fixedJson=JSON.stringify({...data,requiredPlaceholders:Object.keys(slots)})
-      const draftSystem=`Write a natural, complete consumer inquiry in ${ui}. The subject and body must both be written in ${ui}. Return JSON only as {"subject":"","body":""}.
-You receive only FIXED_STRUCTURED_DATA. You do not receive OCR text.
-Treat every fact, amount, count, date, currency, identifier type, and identifier value as immutable.
-Use the required placeholders exactly once each in the body: {{GUEST_NAME}}, {{PRIMARY_IDENTIFIER}}, and {{REFUND_AMOUNT}} only when listed in requiredPlaceholders. Do not write their actual values yourself.
-Use other confirmed facts only when they make the message more natural or clearer. Do not mechanically list facts. Do not include payment date, line count, unit price, breakdown, or secondary identifiers unless the user's issue directly concerns that item.
-Do not calculate, translate, normalize, round, reformat, or invent any value.
-Do not add any number, date, amount, count, identifier, deadline, allegation, or request.
-Your only task is the natural wording and ordering of the core message. Write 2 to 3 short paragraphs and normally 3 to 6 complete sentences. Include a brief transaction context, the user's issue, and the requested resolution. Be concise, but do not compress the inquiry into a single sentence when enough confirmed information is available.
-Do NOT write a greeting, salutation, closing, sign-off, sender name, or signature. The program adds those in a separate fixed layer.
-Keep user statements as user statements and confirmed facts as facts.
-Never output placeholders.`
+      const slots=paragraphSlots(data)
+      if(!slots.identity.GUEST_NAME||!slots.identity.PRIMARY_IDENTIFIER){res.status(422).json({error:'Guest name and a reservation-identifying number are required before drafting.'});return}
+      const mailMeaning={
+        caseType:data.caseType,
+        userStatements:data.statements,
+        requestedOutcome:{code:data.requested.code,statement:data.requested.statement},
+        optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier','chargeSummary'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
+        requiredIdentityPlaceholders:Object.keys(slots.identity),
+        requiredIssuePlaceholders:Object.keys(slots.issue)
+      }
+      const system=`Write only two natural email paragraphs in ${ui}. Return JSON only as {"identityParagraph":"","issueRequestParagraph":""}.
+
+ROLE OF EACH PARAGRAPH
+1. identityParagraph: one concise sentence identifying the customer and the booking/transaction.
+2. issueRequestParagraph: two or three natural sentences explaining the user's issue and requested resolution.
+
+IMMUTABLE PLACEHOLDERS
+- identityParagraph must contain each placeholder in requiredIdentityPlaceholders exactly once.
+- issueRequestParagraph must contain each placeholder in requiredIssuePlaceholders exactly once.
+- Copy placeholder spelling exactly. Never replace a placeholder with an actual value.
+
+STRICT CONTENT RULES
+- Use only MAIL_MEANING. Do not infer, strengthen, calculate, or add facts.
+- Preserve the difference between confirmed document facts and the user's own statement.
+- Do not mechanically list fields, labels, dates, unit prices, counts, breakdowns, or secondary identifiers.
+- Optional confirmed context may be used only when it makes the explanation materially clearer. It is never mandatory.
+- Do not write a subject, greeting, closing, sign-off, sender signature, bullets, headings, or labels.
+- Do not mention that an AI, OCR, document, or analysis was used.
+- Keep the message polite, human, and suitable to send without editing.`
       let lastReason=''
       for(let attempt=1;attempt<=2;attempt++){
-        const retry=attempt===2?`\nPREVIOUS OUTPUT FAILED PROGRAMMATIC VALIDATION: ${lastReason}. Generate again from FIXED_STRUCTURED_DATA only.`:''
-        const generated=await call(key,model,[{role:'system',content:draftSystem+retry},{role:'user',content:`FIXED_STRUCTURED_DATA:\n${fixedJson}`}],2200,0)
-        if(containsEnvelopeText(generated?.body,languageCode)){
-          lastReason='AI output included a greeting, closing, or signature reserved for the fixed envelope layer.'
-          console.warn('Protected draft validation failed',{attempt,reason:lastReason});continue
+        const retry=attempt===2?`\nPREVIOUS ATTEMPT FAILED: ${lastReason}. Correct only the stated failure and return both paragraphs again.`:''
+        const generated=await call(key,model,[{role:'system',content:system+retry},{role:'user',content:`MAIL_MEANING:\n${JSON.stringify(mailMeaning)}`}],1800,0)
+        if(containsEnvelopeText(`${generated?.identityParagraph||''}\n${generated?.issueRequestParagraph||''}`,languageCode)){
+          lastReason='Generated paragraphs included a reserved greeting, closing, or signature.'
+          console.warn('Structured draft validation failed',{attempt,reason:lastReason});continue
         }
-        const slotCheck=validateDraftSlots(generated,slots)
-        if(!slotCheck.ok){lastReason=slotCheck.reason;console.warn('Protected draft validation failed',{attempt,reason:lastReason});continue}
-        const filled=fillDraftSlots(generated,slots)
-        const composed=composeMail(filled,languageCode)
-        const checked=validateProtectedDraft(composed,data,`ai-attempt-${attempt}`)
+        const identityCheck=paragraphTokenCheck(generated?.identityParagraph,slots.identity,'identityParagraph')
+        if(!identityCheck.ok){lastReason=identityCheck.reason;console.warn('Structured draft validation failed',{attempt,reason:lastReason});continue}
+        const issueCheck=paragraphTokenCheck(generated?.issueRequestParagraph,slots.issue,'issueRequestParagraph')
+        if(!issueCheck.ok){lastReason=issueCheck.reason;console.warn('Structured draft validation failed',{attempt,reason:lastReason});continue}
+        const parts={identityParagraph:generated.identityParagraph,issueRequestParagraph:generated.issueRequestParagraph,slots}
+        const composed=composeStructuredMail(parts,data,languageCode)
+        const checked=validateProtectedDraft(composed,data,`structured-ai-attempt-${attempt}`)
         if(checked.ok){res.status(200).json({subject:checked.subject,body:checked.body,generationMode:'ai',validationAttempts:attempt});return}
         lastReason=checked.reason
-        console.warn('Protected draft validation failed',{attempt,reason:lastReason})
+        console.warn('Structured draft validation failed',{attempt,reason:lastReason})
       }
-      const safeCore=safeProtectedDraft(data,str(i.interfaceLanguage)||'en')
-      const safe=composeMail(safeCore,str(i.interfaceLanguage)||'en')
-      const checked=validateProtectedDraft(safe,data,'safe-template')
+      const safeParts=safeStructuredParts(data,languageCode,slots)
+      const safe=composeStructuredMail({...safeParts,slots},data,languageCode)
+      const checked=validateProtectedDraft(safe,data,'structured-safe-template')
       if(!checked.ok)throw new Error(`Safe template validation failed: ${checked.reason}`)
       res.status(200).json({...safe,generationMode:'safe-template',validationAttempts:2});return
     }
