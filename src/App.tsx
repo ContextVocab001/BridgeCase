@@ -4,7 +4,7 @@ import { MsgReader } from '@kenjiuno/msgreader-web-ng'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ChangeEvent, DragEvent } from 'react'
 import './App.css'
-import { analyzeCase, buildCaseReviewData, buildConfirmedDraft, prepareStructuredCase, runOcr, translateApprovedDraft } from './api/caseAnalysis'
+import { analyzeCase, buildCaseReviewData, generateProtectedDraft, prepareStructuredCase, runOcr, translateApprovedDraft } from './api/caseAnalysis'
 import type { CaseAnalysis, UploadedSource } from './api/caseAnalysis'
 import type { CaseReviewData } from './types/workflow'
 
@@ -258,9 +258,9 @@ function App() {
       const reviewData = preparation ? buildCaseReviewData(preparation) : null
       setStructuredReview(reviewData)
       if (reviewData) {
-        const confirmedDraft = buildConfirmedDraft(reviewData, language)
-        setDraftSubject(confirmedDraft.subject)
-        setDraftBody(confirmedDraft.body)
+        const protectedDraft = await generateProtectedDraft({ interfaceLanguage: language, review: reviewData })
+        setDraftSubject(protectedDraft.subject)
+        setDraftBody(protectedDraft.body)
       } else {
         setDraftSubject(result.draft.subject)
         setDraftBody(result.draft.body)

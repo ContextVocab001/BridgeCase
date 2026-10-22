@@ -149,6 +149,54 @@ function normalize(raw,model,sourceText=''){
   const coreReady=Boolean(raw?.readiness?.targetIdentified&&raw?.readiness?.transactionIdentified&&raw?.readiness?.issueIdentified&&raw?.readiness?.outcomeIdentified)
   return{confirmedFacts:facts,userStatements:arr(raw?.userStatements),requestedOutcome:str(raw?.requestedOutcome),readiness:{ready:coreReady,targetIdentified:Boolean(raw?.readiness?.targetIdentified),transactionIdentified:Boolean(raw?.readiness?.transactionIdentified),issueIdentified:Boolean(raw?.readiness?.issueIdentified),outcomeIdentified:Boolean(raw?.readiness?.outcomeIdentified),missingFields:coreReady?[]:missing},messageSource:{senderName:str(m.senderName),senderEmail:str(m.senderEmail),replyTo:str(m.replyTo),subject:str(m.subject),date:str(m.date),isForwarded:Boolean(m.isForwarded),isNoReply:Boolean(m.isNoReply),noReplyReason:str(m.noReplyReason),attachments:arr(m.attachments)},referenceInformation:info,contactCandidates:contacts,draft:{subject:str(raw?.draft?.subject),body:cleanDraftText(raw?.draft?.body)},meta:{mode:'nebius',model}}
 }
+
+function normalizedProtected(value){return str(value).normalize('NFKC').replace(/[‐‑‒–—]/g,'-').replace(/\s+/g,' ').trim()}
+function numericTokens(value){return normalizedProtected(value).match(/(?:[$€£¥￥]\s*|\b(?:USD|EUR|GBP|JPY)\s*)?-?\d[\d,]*(?:\.\d+)?/gi)||[]}
+function dateTokens(value){return normalizedProtected(value).match(/\b(?:\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4})\b/gi)||[]}
+function protectedDraftData(review){
+  const facts=Array.isArray(review?.confirmedFacts)?review.confirmedFacts.map(x=>({key:str(x?.key),label:str(x?.label),value:str(x?.value),source:str(x?.source)})).filter(x=>x.label&&x.value):[]
+  const statements=arr(review?.userStatements)
+  const requested=review?.requestedOutcome&&typeof review.requestedOutcome==='object'?{code:str(review.requestedOutcome.code),statement:str(review.requestedOutcome.statement),amount:Number.isFinite(Number(review.requestedOutcome.amount))?Number(review.requestedOutcome.amount):undefined,currency:str(review.requestedOutcome.currency)}:{code:'OTHER',statement:''}
+  const primary=review?.primaryIdentifier&&typeof review.primaryIdentifier==='object'?{type:str(review.primaryIdentifier.type),label:str(review.primaryIdentifier.label),value:str(review.primaryIdentifier.value)}:null
+  return{caseType:str(review?.caseType)||'other',facts,statements,requested,primary}
+}
+function collectProtectedValues(data){
+  const values=[]
+  for(const fact of data.facts)values.push(fact.value)
+  if(data.primary?.value)values.push(data.primary.value)
+  if(Number.isFinite(data.requested?.amount))values.push(`${data.requested.currency?data.requested.currency+' ':''}${Number(data.requested.amount).toFixed(2)}`.trim())
+  return[...new Set(values.map(normalizedProtected).filter(Boolean))]
+}
+function protectedSignature(data){
+  const source=[...data.facts.map(x=>x.value),data.primary?.value||'',Number.isFinite(data.requested?.amount)?`${data.requested.currency||''} ${Number(data.requested.amount).toFixed(2)}`:''].join('\n')
+  return{numbers:numericTokens(source).map(normalizedProtected).sort(),dates:dateTokens(source).map(normalizedProtected).sort(),identifier:data.primary?.value?normalizedProtected(data.primary.value):''}
+}
+function sameMultiset(a,b){return a.length===b.length&&a.every((x,i)=>x===b[i])}
+function validateProtectedDraft(result,data){
+  const subject=str(result?.subject),body=cleanDraftText(result?.body),combined=normalizedProtected(`${subject}\n${body}`)
+  if(!subject||!body)return{ok:false,reason:'Draft is incomplete.'}
+  const protectedValues=collectProtectedValues(data)
+  for(const value of protectedValues){if(!combined.includes(value))return{ok:false,reason:`Protected value missing or changed: ${value}`}}
+  const expected=protectedSignature(data)
+  const actualNumbers=numericTokens(combined).map(normalizedProtected).sort()
+  const actualDates=dateTokens(combined).map(normalizedProtected).sort()
+  if(!sameMultiset(actualNumbers,expected.numbers))return{ok:false,reason:'Amount, quantity, date, or numeric identifier mismatch.'}
+  if(!sameMultiset(actualDates,expected.dates))return{ok:false,reason:'Date mismatch.'}
+  if(expected.identifier&&!combined.includes(expected.identifier))return{ok:false,reason:'Primary identifier mismatch.'}
+  return{ok:true,subject,body}
+}
+function safeProtectedDraft(data,language){
+  const identifier=data.primary?`${data.primary.label}: ${data.primary.value}`:''
+  const factLines=data.facts.map(x=>`${x.label}: ${x.value}`)
+  const statements=data.statements.map(x=>`- ${x}`)
+  const request=data.requested.statement
+  const issueLabel=data.facts.find(x=>/charge|item|明細|cargo/i.test(x.label))?.value||''
+  const subjectParts=[request,issueLabel,identifier].filter(Boolean)
+  if(language==='ja')return{subject:subjectParts.join(' / ')||'お問い合わせ',body:['ご担当者様','','以下の件についてお問い合わせいたします。','',identifier,...factLines,...statements,'',request,'','ご確認のほど、よろしくお願いいたします。'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
+  if(language==='es')return{subject:subjectParts.join(' / ')||'Consulta',body:['A quien corresponda:','','Me comunico en relación con el siguiente asunto.','',identifier,...factLines,...statements,'',request,'','Gracias por su ayuda.','Atentamente,'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
+  return{subject:subjectParts.join(' / ')||'Inquiry',body:['To whom it may concern,','','I am contacting you regarding the following matter.','',identifier,...factLines,...statements,'',request,'','Thank you for your assistance.','Best regards,'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
+}
+
 export const config={maxDuration:60}
 export default async function handler(req,res){
   if(req.method!=='POST'){res.status(405).json({error:'Method not allowed.'});return}
@@ -156,6 +204,31 @@ export default async function handler(req,res){
   if(!key){res.status(503).json({error:'NEBIUS_API_KEY is not configured.'});return}
   try{
     const i=req.body||{},model=process.env.NEBIUS_MODEL||MODEL,ui=names[i.interfaceLanguage]||'English',recipient=names[i.recipientLanguage]||'English'
+    if(i.mode==='generate-protected-draft'){
+      const data=protectedDraftData(i.review)
+      if(!data.facts.length||!data.statements.length||!data.requested.statement){res.status(400).json({error:'Confirmed case data is incomplete.'});return}
+      const fixedJson=JSON.stringify(data)
+      const draftSystem=`Write a natural, concise consumer inquiry in ${ui}. Return JSON only as {"subject":"","body":""}.
+You receive only FIXED_STRUCTURED_DATA. You do not receive OCR text.
+Treat every fact, amount, count, date, currency, identifier type, and identifier value as immutable.
+Use all supplied fixed values exactly as written. Do not calculate, translate, normalize, round, reformat, omit, duplicate, or invent any value.
+Do not add any number, date, amount, count, identifier, deadline, allegation, or request.
+Your only task is natural wording, ordering, greeting, and closing.
+Keep user statements as user statements and confirmed facts as facts.
+Never output placeholders.`
+      let lastReason=''
+      for(let attempt=1;attempt<=2;attempt++){
+        const retry=attempt===2?`\nPREVIOUS OUTPUT FAILED PROGRAMMATIC VALIDATION: ${lastReason}. Generate again from FIXED_STRUCTURED_DATA only.`:''
+        const generated=await call(key,model,[{role:'system',content:draftSystem+retry},{role:'user',content:`FIXED_STRUCTURED_DATA:\n${fixedJson}`}],2200,0)
+        const checked=validateProtectedDraft(generated,data)
+        if(checked.ok){res.status(200).json({subject:checked.subject,body:checked.body,generationMode:'ai',validationAttempts:attempt});return}
+        lastReason=checked.reason
+      }
+      const safe=safeProtectedDraft(data,str(i.interfaceLanguage)||'en')
+      const checked=validateProtectedDraft(safe,data)
+      if(!checked.ok)throw new Error(`Safe template validation failed: ${checked.reason}`)
+      res.status(200).json({...safe,generationMode:'safe-template',validationAttempts:2});return
+    }
     if(i.mode==='structure-user-input'){
       const userText=str(i.userText||i.userRequest)
       if(!userText){res.status(400).json({error:'User explanation is required.'});return}

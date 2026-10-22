@@ -79,6 +79,7 @@ async function post(input: AnalyzeCaseInput) {
   return payload
 }
 export async function analyzeCase(input: AnalyzeCaseInput): Promise<CaseAnalysis> { return post({...input,mode:'analyze'}) }
+export async function generateProtectedDraft(input: { interfaceLanguage: LanguageCode; review: CaseReviewData }): Promise<{subject:string;body:string;generationMode:'ai'|'safe-template';validationAttempts:number}> { return post({mode:'generate-protected-draft',interfaceLanguage:input.interfaceLanguage,recipientLanguage:input.interfaceLanguage,review:input.review,originalMessage:'',userRequest:'',documents:[]} as AnalyzeCaseInput) }
 export async function structureUserInput(input: StructureUserInputInput): Promise<UserInputStructure> { return post({...input,mode:'structure-user-input',originalMessage:'',userRequest:input.userText,recipientLanguage:input.draftLanguage,documents:[]}) }
 export async function selectChargeLabel(input: SelectChargeLabelInput): Promise<ChargeLabelSelection> { return post({...input,mode:'select-charge-label',originalMessage:'',userRequest:input.userStructure.originalText,recipientLanguage:input.interfaceLanguage,documents:[]}) }
 export async function aggregateSelectedCharge(input: AggregateSelectedChargeInput): Promise<ChargeAggregation> { return post({...input,mode:'aggregate-selected-charge',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
