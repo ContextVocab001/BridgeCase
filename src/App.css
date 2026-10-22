@@ -786,3 +786,20 @@
     font-size: 18px !important;
   }
 }
+
+/* 2026-10 Step 3: make the email draft easier to review without excessive scrolling */
+.draft-area {
+  min-height: 560px;
+  height: min(62vh, 680px);
+  max-height: 820px;
+  resize: vertical;
+  line-height: 1.65;
+}
+
+@media (max-width: 700px) {
+  .draft-area {
+    min-height: 440px;
+    height: 56vh;
+    max-height: 680px;
+  }
+}
