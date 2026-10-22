@@ -184,8 +184,38 @@ function extractDates(value){
   const found=text.match(/\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4})\b/gi)||[]
   return found.map(x=>normalizedProtected(x).toUpperCase())
 }
+function parseJsonObject(value){try{const parsed=JSON.parse(str(value));return parsed&&typeof parsed==='object'?parsed:null}catch{return null}}
+function formatChargeSummary(value){
+  const data=parseJsonObject(value)
+  if(!data)return normalizedProtected(value)
+  const currency=str(data.currencyCode)||str(data.currencySymbol)
+  const groups=Array.isArray(data.amountGroups)?data.amountGroups:[]
+  const details=groups.map(group=>{
+    const unit=Number(group?.unitAmount),count=Number(group?.count),subtotal=Number(group?.subtotal)
+    if(!Number.isFinite(unit)||!Number.isFinite(count))return''
+    const total=Number.isFinite(subtotal)?subtotal:unit*count
+    return`${currency} ${unit.toFixed(2)} x ${count} = ${currency} ${total.toFixed(2)}`
+  }).filter(Boolean)
+  if(details.length)return details.join('; ')
+  const total=Number(data.totalAmount),count=Number(data.lineCount)
+  if(Number.isFinite(total))return`${currency} ${total.toFixed(2)}${Number.isFinite(count)&&count>1?` (${count} items)`:''}`
+  return''
+}
+function safeFactValue(fact){
+  if(fact?.key==='chargeSummary')return formatChargeSummary(fact.value)
+  const value=normalizedProtected(fact?.value)
+  return value.startsWith('{')||value.startsWith('[')?'':value
+}
+function localizedFactLabel(fact,language){
+  const labels={
+    ja:{organization:'施設・会社名',startDate:'開始日',endDate:'終了日',chargeLabel:'対象明細',chargeSummary:'金額内訳',primaryIdentifier:'識別番号'},
+    es:{organization:'Organización',startDate:'Fecha de inicio',endDate:'Fecha de finalización',chargeLabel:'Concepto cuestionado',chargeSummary:'Resumen del cargo',primaryIdentifier:'Identificador'},
+    en:{organization:'Organization',startDate:'Start date',endDate:'End date',chargeLabel:'Disputed item',chargeSummary:'Charge summary',primaryIdentifier:'Identifier'}
+  }
+  return labels[language]?.[fact?.key]||str(fact?.label)||str(fact?.key)
+}
 function protectedDraftData(review){
-  const facts=Array.isArray(review?.confirmedFacts)?review.confirmedFacts.map(x=>({key:str(x?.key),label:str(x?.label),value:str(x?.value),source:str(x?.source)})).filter(x=>x.label&&x.value):[]
+  const facts=Array.isArray(review?.confirmedFacts)?review.confirmedFacts.map(x=>({key:str(x?.key),label:str(x?.label),value:safeFactValue(x),source:str(x?.source)})).filter(x=>x.label&&x.value):[]
   const statements=arr(review?.userStatements)
   const requested=review?.requestedOutcome&&typeof review.requestedOutcome==='object'?{code:str(review.requestedOutcome.code),statement:str(review.requestedOutcome.statement),amount:Number.isFinite(Number(review.requestedOutcome.amount))?Number(review.requestedOutcome.amount):undefined,currency:str(review.requestedOutcome.currency).toUpperCase()}:{code:'OTHER',statement:''}
   const primary=review?.primaryIdentifier&&typeof review.primaryIdentifier==='object'?{type:str(review.primaryIdentifier.type),label:str(review.primaryIdentifier.label),value:str(review.primaryIdentifier.value)}:null
@@ -256,15 +286,15 @@ function composeMail(core,language){
   return{subject,body:`${envelope.greeting}\n\n${body}\n\n${envelope.closing}`}
 }
 function safeProtectedDraft(data,language){
-  const identifier=data.primary?`${data.primary.label}: ${data.primary.value}`:''
-  const factLines=data.facts.map(x=>`${x.label}: ${x.value}`)
-  const statements=data.statements.map(x=>`- ${x}`)
+  const facts=data.facts.map(fact=>`${localizedFactLabel(fact,language)}: ${safeFactValue(fact)}`).filter(line=>!/[：:]\s*$/.test(line))
+  const statements=data.statements.map(statement=>`- ${statement}`)
   const request=data.requested.statement
-  const issueLabel=data.facts.find(x=>/charge|item|明細|cargo/i.test(x.label))?.value||''
-  const subjectParts=[issueLabel,identifier].filter(Boolean)
-  if(language==='ja')return{subject:subjectParts.join(' / ')||'お問い合わせ',body:['以下の件についてお問い合わせいたします。','',identifier,...factLines,...statements,'',request].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
-  if(language==='es')return{subject:subjectParts.join(' / ')||'Consulta',body:['Me comunico en relación con el siguiente asunto.','',identifier,...factLines,...statements,'',request].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
-  return{subject:subjectParts.join(' / ')||'Inquiry',body:['I am contacting you regarding the following matter.','',identifier,...factLines,...statements,'',request].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
+  const issue=data.facts.find(x=>x.key==='chargeLabel')?.value||''
+  const identifier=data.primary?.value||''
+  const subject=[issue,identifier].filter(Boolean).join(' / ')||(language==='ja'?'お問い合わせ':language==='es'?'Consulta':'Inquiry')
+  if(language==='ja')return{subject,body:['以下の件についてお問い合わせいたします。','',...facts,statements.length?'':'',...statements,'',request].filter((line,index,array)=>line||(index>0&&array[index-1])).join('\n').trim()}
+  if(language==='es')return{subject,body:['Me comunico en relación con el siguiente asunto.','',...facts,statements.length?'':'',...statements,'',request].filter((line,index,array)=>line||(index>0&&array[index-1])).join('\n').trim()}
+  return{subject,body:['I am contacting you regarding the following matter.','',...facts,statements.length?'':'',...statements,'',request].filter((line,index,array)=>line||(index>0&&array[index-1])).join('\n').trim()}
 }
 export const config={maxDuration:60}
 export default async function handler(req,res){
@@ -406,7 +436,7 @@ RULES:
 - Use only OCR_TEXT. Do not use outside knowledge.
 - organizationName must be a clean, searchable organization/property/company name supported by OCR_TEXT. Remove decorative symbols such as registered or trademark marks, but do not invent or expand the name.
 - organizationQuote must be an OCR_TEXT row or contiguous excerpt supporting the organization name. It may contain decorative symbols, spacing differences, or surrounding address text.
-- For hotel, rental-car, and airline cases, startDate/endDate are the printed service/usage dates when clearly labeled. For other cases, use transaction/order/service dates only when clearly supported.
+- For hotel, rental-car, and airline cases, startDate/endDate are the printed service/usage dates when clearly labeled. If OCR_TEXT contains a clearly printed paired range such as arrival/departure, check-in/check-out, rental start/return, pickup/drop-off, or travel departure/arrival, return both endpoints exactly as printed; do not omit the second endpoint. For other cases, use transaction/order/service dates only when clearly supported.
 - Keep dates in the exact source format. Do not calculate duration, nights, days, or quantities.
 - dateQuotes must contain exact OCR_TEXT lines supporting the dates.
 - If a field is not clearly supported, return an empty string or empty array.
@@ -422,9 +452,9 @@ ${documentText}`}],1000,0)
       const organizationTokens=evidenceTokens(organizationName)
       const sufficientlySpecific=organizationTokens.length>=2||normalizeEvidenceText(organizationName).length>=8
       const validOrganization=organizationName&&organizationSupported&&quoteSupported&&sufficientlySpecific
-      const dateQuotes=arr(extracted?.dateQuotes).filter(quote=>documentLines.includes(quote)).slice(0,3)
+      const dateQuotes=arr(extracted?.dateQuotes).filter(quote=>orderedEvidenceMatch(documentText,quote)).slice(0,3)
       const startDate=str(extracted?.startDate),endDate=str(extracted?.endDate)
-      const supportedDate=value=>!value||dateQuotes.some(quote=>quote.includes(value))
+      const supportedDate=value=>!value||orderedEvidenceMatch(documentText,value)||dateQuotes.some(quote=>normalizeEvidenceText(quote).includes(normalizeEvidenceText(value)))
       const acceptedOrganizationQuote=validOrganization?(evidenceLinesForLabel(documentText,organizationName,1)[0]||organizationQuote):''
       res.status(200).json({organizationName:validOrganization?organizationName:'',organizationQuote:acceptedOrganizationQuote,startDate:supportedDate(startDate)?startDate:'',endDate:supportedDate(endDate)?endDate:'',dateQuotes});return
     }
