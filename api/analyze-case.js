@@ -23,16 +23,32 @@ function parseTrailingAmount(line){
   const amount=Number(match[1].replace(/[$€£¥￥,\s]/g,''))
   return Number.isFinite(amount)?Math.round(amount*100)/100:null
 }
+function normalizeOcrText(value){return str(value).toLowerCase().replace(/[‐‑‒–—]/g,'-').replace(/\s+/g,' ').trim()}
 function aggregateSelectedCharge(documentText,selectedLabel){
   const label=str(selectedLabel),currency=detectDocumentCurrency(documentText)
   if(!label)return{selectedLabel:'',currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:0,totalAmount:0,amountGroups:[],evidenceLines:[]}
-  const evidenceLines=str(documentText).split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(line=>line&&line.includes(label)&&parseTrailingAmount(line)!==null)
-  const amounts=evidenceLines.map(line=>parseTrailingAmount(line)).filter(amount=>amount!==null)
-  const grouped=new Map()
+  const lines=str(documentText).split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
+  const normalizedLabel=normalizeOcrText(label),matches=[]
+  for(let index=0;index<lines.length;index+=1){
+    if(!normalizeOcrText(lines[index]).includes(normalizedLabel))continue
+    let amount=parseTrailingAmount(lines[index]),amountIndex=index
+    if(amount===null){
+      for(const candidateIndex of [index+1,index+2,index+3,index-1]){
+        if(candidateIndex<0||candidateIndex>=lines.length)continue
+        const candidateAmount=parseTrailingAmount(lines[candidateIndex])
+        if(candidateAmount!==null){amount=candidateAmount;amountIndex=candidateIndex;break}
+      }
+    }
+    if(amount!==null){
+      const evidence=amountIndex===index?lines[index]:`${lines[index]} | ${lines[amountIndex]}`
+      matches.push({amount,evidence})
+    }
+  }
+  const amounts=matches.map(match=>match.amount),grouped=new Map()
   for(const amount of amounts){const key=amount.toFixed(2),current=grouped.get(key)||{unitAmount:amount,count:0,subtotal:0};current.count+=1;current.subtotal=Math.round((current.subtotal+amount)*100)/100;grouped.set(key,current)}
   const amountGroups=[...grouped.values()]
   const totalAmount=Math.round(amounts.reduce((sum,amount)=>sum+amount,0)*100)/100
-  return{selectedLabel:label,currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:evidenceLines.length,totalAmount,amountGroups,evidenceLines}
+  return{selectedLabel:label,currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:matches.length,totalAmount,amountGroups,evidenceLines:matches.map(match=>match.evidence)}
 }
 const IDENTIFIER_RULES={
   hotel:[
