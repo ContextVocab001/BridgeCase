@@ -24,6 +24,23 @@ function parseTrailingAmount(line){
   return Number.isFinite(amount)?Math.round(amount*100)/100:null
 }
 function normalizeOcrText(value){return str(value).toLowerCase().replace(/[‐‑‒–—]/g,'-').replace(/\s+/g,' ').trim()}
+function normalizeEvidenceText(value){return normalizeOcrText(value).normalize('NFKD').replace(/[®™©]/g,' ').replace(/[^\p{L}\p{N}.+-]+/gu,' ').replace(/\s+/g,' ').trim()}
+function evidenceTokens(value){return normalizeEvidenceText(value).split(' ').filter(Boolean)}
+function orderedEvidenceMatch(documentText,candidate){
+  const document=normalizeEvidenceText(documentText),phrase=normalizeEvidenceText(candidate)
+  if(!document||!phrase)return false
+  if(document.includes(phrase))return true
+  const tokens=evidenceTokens(candidate)
+  if(tokens.length<2)return false
+  let from=0
+  for(const token of tokens){const index=document.indexOf(token,from);if(index<0)return false;from=index+token.length}
+  return true
+}
+function evidenceLinesForLabel(documentText,label,limit=5){
+  const normalizedLabel=normalizeEvidenceText(label)
+  if(!normalizedLabel)return[]
+  return str(documentText).split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean).filter(line=>normalizeEvidenceText(line).includes(normalizedLabel)||orderedEvidenceMatch(line,label)).slice(0,limit)
+}
 function allOccurrences(text,needle){const result=[];let from=0;while(needle&&from<text.length){const index=text.indexOf(needle,from);if(index<0)break;result.push(index);from=index+Math.max(1,needle.length)}return result}
 function chargeOccurrenceWindows(documentText,selectedLabel){
   const normalizedText=normalizeOcrText(documentText),normalizedLabel=normalizeOcrText(selectedLabel),positions=allOccurrences(normalizedText,normalizedLabel)
@@ -180,7 +197,7 @@ RULES:
 - USER_STRUCTURE contains the user's already-validated claims and requested action. Do not reinterpret or strengthen them.
 - OCR_TEXT is evidence. Select a label only when it appears verbatim in OCR_TEXT.
 - selectedLabel must be the exact recurring or disputed line-item description as printed in OCR_TEXT, without a date, amount, currency, quantity, or calculated total.
-- documentQuotes must contain 1 to 5 exact OCR_TEXT lines that include selectedLabel.
+- documentQuotes should contain 1 to 5 OCR_TEXT rows or contiguous excerpts that support selectedLabel. Decorative symbols, spacing, and surrounding date/amount columns may differ.
 - userClaimCodes must contain only codes present in USER_STRUCTURE.claims that support the selection.
 - This step selects a label only. Do not count occurrences, calculate totals, infer nights/days, select identifiers, draft a message, translate, or judge whether the charge is valid.
 - Do not select payment methods, card brands, balances, grand totals, addresses, names, room numbers, authorization codes, or generic headers such as DATE, DESCRIPTION, CHARGES, CREDITS.
@@ -193,12 +210,14 @@ OCR_TEXT:
 ${documentText}`
       const selected=await call(key,model,[{role:'system',content:selectionSystem},{role:'user',content:selectionUser}],1300,0)
       const selectedLabel=str(selected?.selectedLabel)
-      const documentLines=documentText.split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
-      const documentQuotes=arr(selected?.documentQuotes).filter(quote=>documentLines.includes(quote)&&(!selectedLabel||quote.includes(selectedLabel))).slice(0,5)
+      const aiQuotes=arr(selected?.documentQuotes)
+      const validatedAiQuotes=aiQuotes.filter(quote=>orderedEvidenceMatch(documentText,quote)&&(!selectedLabel||orderedEvidenceMatch(quote,selectedLabel))).slice(0,5)
+      const derivedQuotes=selectedLabel?evidenceLinesForLabel(documentText,selectedLabel,5):[]
+      const documentQuotes=[...new Set([...validatedAiQuotes,...derivedQuotes])].slice(0,5)
       const permittedCodes=new Set(Array.isArray(userStructure.claims)?userStructure.claims.map(x=>str(x?.code)).filter(Boolean):[])
       const userClaimCodes=arr(selected?.userClaimCodes).filter(code=>permittedCodes.has(code))
       const confidence=['high','medium','low'].includes(str(selected?.confidence))?str(selected.confidence):'low'
-      if(selectedLabel&&(!documentText.includes(selectedLabel)||!documentQuotes.length)){throw new Error('AI selected a charge label without exact document evidence.')}
+      if(selectedLabel&&(!orderedEvidenceMatch(documentText,selectedLabel)||!documentQuotes.length)){throw new Error('AI selected a charge label without normalized document evidence.')}
       res.status(200).json({selectedLabel,documentQuotes,userClaimCodes,confidence,reason:str(selected?.reason)});return
     }
     if(i.mode==='aggregate-selected-charge'){
@@ -235,8 +254,8 @@ OUTPUT SHAPE:
 {"organizationName":"","organizationQuote":"","startDate":"","endDate":"","dateQuotes":[""]}
 RULES:
 - Use only OCR_TEXT. Do not use outside knowledge.
-- organizationName must be the exact organization/property/company name printed in OCR_TEXT, without address, phone, URL, card brand, processor, or legal explanation.
-- organizationQuote must be one exact OCR_TEXT line containing the organizationName.
+- organizationName must be a clean, searchable organization/property/company name supported by OCR_TEXT. Remove decorative symbols such as registered or trademark marks, but do not invent or expand the name.
+- organizationQuote must be an OCR_TEXT row or contiguous excerpt supporting the organization name. It may contain decorative symbols, spacing differences, or surrounding address text.
 - For hotel, rental-car, and airline cases, startDate/endDate are the printed service/usage dates when clearly labeled. For other cases, use transaction/order/service dates only when clearly supported.
 - Keep dates in the exact source format. Do not calculate duration, nights, days, or quantities.
 - dateQuotes must contain exact OCR_TEXT lines supporting the dates.
@@ -248,17 +267,16 @@ ${documentText}`}],1000,0)
       const documentLines=documentText.split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
       const organizationName=str(extracted?.organizationName)
       const organizationQuote=str(extracted?.organizationQuote)
-      const normalizedDocument=normalizeOcrText(documentText),normalizedOrganization=normalizeOcrText(organizationName),normalizedQuote=normalizeOcrText(organizationQuote)
-      const quoteFoundInOcr=Boolean(normalizedQuote&&normalizedDocument.includes(normalizedQuote))
-      const nameFoundInQuote=Boolean(normalizedOrganization&&normalizedQuote.includes(normalizedOrganization))
-      const validOrganization=organizationName&&organizationQuote&&quoteFoundInOcr&&nameFoundInQuote
-      const diagnosticHeader=documentLines.slice(0,40)
-      const organizationTokenMatches=documentLines.filter(line=>/residence|inn|hotel|motel|resort|marriott|corona|riverside/i.test(line)).slice(0,20)
-      console.log('TELTRUVA_CONTEXT_DIAGNOSTIC',JSON.stringify({caseType,ocrHeaderLines:diagnosticHeader,organizationTokenMatches,aiOrganizationName:organizationName,aiOrganizationQuote:organizationQuote,normalizedOrganization,normalizedQuote,quoteFoundInOcr,nameFoundInQuote,organizationAccepted:Boolean(validOrganization),aiStartDate:str(extracted?.startDate),aiEndDate:str(extracted?.endDate)}))
+      const organizationSupported=orderedEvidenceMatch(documentText,organizationName)
+      const quoteSupported=!organizationQuote||orderedEvidenceMatch(documentText,organizationQuote)||orderedEvidenceMatch(documentText,organizationName)
+      const organizationTokens=evidenceTokens(organizationName)
+      const sufficientlySpecific=organizationTokens.length>=2||normalizeEvidenceText(organizationName).length>=8
+      const validOrganization=organizationName&&organizationSupported&&quoteSupported&&sufficientlySpecific
       const dateQuotes=arr(extracted?.dateQuotes).filter(quote=>documentLines.includes(quote)).slice(0,3)
       const startDate=str(extracted?.startDate),endDate=str(extracted?.endDate)
       const supportedDate=value=>!value||dateQuotes.some(quote=>quote.includes(value))
-      res.status(200).json({organizationName:validOrganization?organizationName:'',organizationQuote:validOrganization?organizationQuote:'',startDate:supportedDate(startDate)?startDate:'',endDate:supportedDate(endDate)?endDate:'',dateQuotes});return
+      const acceptedOrganizationQuote=validOrganization?(evidenceLinesForLabel(documentText,organizationName,1)[0]||organizationQuote):''
+      res.status(200).json({organizationName:validOrganization?organizationName:'',organizationQuote:acceptedOrganizationQuote,startDate:supportedDate(startDate)?startDate:'',endDate:supportedDate(endDate)?endDate:'',dateQuotes});return
     }
     if(i.mode==='classify-case-type'){
       const documentText=str(i.documentText)
