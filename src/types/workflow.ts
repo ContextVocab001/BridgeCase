@@ -136,6 +136,8 @@ export type CaseTypeClassification = {
 }
 
 export type CaseContext = {
+  guestName: string
+  guestNameQuote: string
   organizationName: string
   organizationQuote: string
   startDate: string
@@ -164,6 +166,7 @@ export type CaseReviewData = {
   readiness: {
     ready: boolean
     hasOrganization: boolean
+    hasGuestName: boolean
     hasIssue: boolean
     hasOutcome: boolean
     hasPrimaryIdentifier: boolean

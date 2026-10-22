@@ -208,9 +208,9 @@ function safeFactValue(fact){
 }
 function localizedFactLabel(fact,language){
   const labels={
-    ja:{organization:'施設・会社名',startDate:'開始日',endDate:'終了日',chargeLabel:'対象明細',chargeSummary:'金額内訳',primaryIdentifier:'識別番号'},
-    es:{organization:'Organización',startDate:'Fecha de inicio',endDate:'Fecha de finalización',chargeLabel:'Concepto cuestionado',chargeSummary:'Resumen del cargo',primaryIdentifier:'Identificador'},
-    en:{organization:'Organization',startDate:'Start date',endDate:'End date',chargeLabel:'Disputed item',chargeSummary:'Charge summary',primaryIdentifier:'Identifier'}
+    ja:{guestName:'宿泊者名',organization:'施設・会社名',startDate:'開始日',endDate:'終了日',chargeLabel:'対象明細',chargeSummary:'金額内訳',primaryIdentifier:'識別番号'},
+    es:{guestName:'Nombre del huésped',organization:'Organización',startDate:'Fecha de inicio',endDate:'Fecha de finalización',chargeLabel:'Concepto cuestionado',chargeSummary:'Resumen del cargo',primaryIdentifier:'Identificador'},
+    en:{guestName:'Guest name',organization:'Organization',startDate:'Start date',endDate:'End date',chargeLabel:'Disputed item',chargeSummary:'Charge summary',primaryIdentifier:'Identifier'}
   }
   return labels[language]?.[fact?.key]||str(fact?.label)||str(fact?.key)
 }
@@ -265,6 +265,24 @@ function validateProtectedDraft(result,data,context='ai'){
   console.info('Protected draft validation passed',{context,allowedMoney:[...allowedMoney.keys()],actualMoney:[...actualMoney.keys()],identifier:data.primary?.value||'',dates:[...expectedDates(data)]})
   return{ok:true,subject,body}
 }
+function draftSlots(data){
+  const guest=data.facts.find(x=>x.key==='guestName')?.value||''
+  const identifier=data.primary?.value||''
+  const slots={GUEST_NAME:guest,PRIMARY_IDENTIFIER:identifier}
+  if(Number.isFinite(data.requested?.amount)&&data.requested.currency)slots.REFUND_AMOUNT=`${data.requested.currency} ${Number(data.requested.amount).toFixed(2)}`
+  return slots
+}
+function fillDraftSlots(core,slots){
+  let subject=str(core?.subject),body=cleanDraftText(core?.body)
+  for(const [key,value] of Object.entries(slots)){const token=`{{${key}}}`;subject=subject.split(token).join(str(value));body=body.split(token).join(str(value))}
+  return{subject,body}
+}
+function validateDraftSlots(core,slots){
+  const combined=`${str(core?.subject)}\n${cleanDraftText(core?.body)}`
+  const missing=Object.keys(slots).filter(key=>!combined.includes(`{{${key}}}`))
+  const unknown=[...combined.matchAll(/{{([A-Z0-9_]+)}}/g)].map(match=>match[1]).filter(key=>!(key in slots))
+  return{ok:missing.length===0&&unknown.length===0,reason:missing.length?`Missing required placeholders: ${missing.join(', ')}`:unknown.length?`Unknown placeholders: ${unknown.join(', ')}`:''}
+}
 function mailEnvelope(language){
   if(language==='ja')return{greeting:'ご担当者様',closing:'ご確認のほど、よろしくお願いいたします。'}
   if(language==='es')return{greeting:'Estimado equipo de atención al cliente:',closing:'Gracias por su atención.\n\nAtentamente,'}
@@ -306,11 +324,15 @@ export default async function handler(req,res){
     if(i.mode==='generate-protected-draft'){
       const data=protectedDraftData(i.review)
       if(!data.facts.length||!data.statements.length||!data.requested.statement){res.status(400).json({error:'Confirmed case data is incomplete.'});return}
-      const fixedJson=JSON.stringify(data)
+      const slots=draftSlots(data)
+      if(!slots.GUEST_NAME||!slots.PRIMARY_IDENTIFIER){res.status(422).json({error:'Guest name and a reservation-identifying number are required before drafting.'});return}
+      const fixedJson=JSON.stringify({...data,requiredPlaceholders:Object.keys(slots)})
       const draftSystem=`Write a natural, concise consumer inquiry in ${ui}. Return JSON only as {"subject":"","body":""}.
 You receive only FIXED_STRUCTURED_DATA. You do not receive OCR text.
 Treat every fact, amount, count, date, currency, identifier type, and identifier value as immutable.
-Use all supplied fixed values exactly as written. Do not calculate, translate, normalize, round, reformat, omit, duplicate, or invent any value.
+Use the required placeholders exactly once each in the body: {{GUEST_NAME}}, {{PRIMARY_IDENTIFIER}}, and {{REFUND_AMOUNT}} only when listed in requiredPlaceholders. Do not write their actual values yourself.
+Use other confirmed facts only when they make the message more natural or clearer. Do not mechanically list facts. Do not include payment date, line count, unit price, breakdown, or secondary identifiers unless the user's issue directly concerns that item.
+Do not calculate, translate, normalize, round, reformat, or invent any value.
 Do not add any number, date, amount, count, identifier, deadline, allegation, or request.
 Your only task is the natural wording and ordering of the core message.
 Do NOT write a greeting, salutation, closing, sign-off, sender name, or signature. The program adds those in a separate fixed layer.
@@ -324,7 +346,10 @@ Never output placeholders.`
           lastReason='AI output included a greeting, closing, or signature reserved for the fixed envelope layer.'
           console.warn('Protected draft validation failed',{attempt,reason:lastReason});continue
         }
-        const composed=composeMail(generated,ui)
+        const slotCheck=validateDraftSlots(generated,slots)
+        if(!slotCheck.ok){lastReason=slotCheck.reason;console.warn('Protected draft validation failed',{attempt,reason:lastReason});continue}
+        const filled=fillDraftSlots(generated,slots)
+        const composed=composeMail(filled,ui)
         const checked=validateProtectedDraft(composed,data,`ai-attempt-${attempt}`)
         if(checked.ok){res.status(200).json({subject:checked.subject,body:checked.body,generationMode:'ai',validationAttempts:attempt});return}
         lastReason=checked.reason
@@ -431,9 +456,11 @@ RULES:
       if(!documentText){res.status(400).json({error:'OCR text is required.'});return}
       const contextSystem=`Extract only the organization and transaction/service date range from OCR_TEXT. Return JSON only.
 OUTPUT SHAPE:
-{"organizationName":"","organizationQuote":"","startDate":"","endDate":"","dateQuotes":[""]}
+{"guestName":"","guestNameQuote":"","organizationName":"","organizationQuote":"","startDate":"","endDate":"","dateQuotes":[""]}
 RULES:
 - Use only OCR_TEXT. Do not use outside knowledge.
+- guestName must be the guest/customer name explicitly printed in OCR_TEXT. Never infer it from an email address, cardholder fragment, loyalty account, or outside knowledge.
+- guestNameQuote must be an exact OCR_TEXT row or contiguous excerpt supporting guestName.
 - organizationName must be a clean, searchable organization/property/company name supported by OCR_TEXT. Remove decorative symbols such as registered or trademark marks, but do not invent or expand the name.
 - organizationQuote must be an OCR_TEXT row or contiguous excerpt supporting the organization name. It may contain decorative symbols, spacing differences, or surrounding address text.
 - For hotel, rental-car, and airline cases, startDate/endDate are the printed service/usage dates when clearly labeled. If OCR_TEXT contains a clearly printed paired range such as arrival/departure, check-in/check-out, rental start/return, pickup/drop-off, or travel departure/arrival, return both endpoints exactly as printed; do not omit the second endpoint. For other cases, use transaction/order/service dates only when clearly supported.
@@ -445,6 +472,9 @@ RULES:
       const extracted=await call(key,model,[{role:'system',content:contextSystem},{role:'user',content:`OCR_TEXT:
 ${documentText}`}],1000,0)
       const documentLines=documentText.split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
+      const guestName=str(extracted?.guestName)
+      const guestNameQuote=str(extracted?.guestNameQuote)
+      const guestNameSupported=guestName&&orderedEvidenceMatch(documentText,guestName)&&( !guestNameQuote||orderedEvidenceMatch(documentText,guestNameQuote) )
       const organizationName=str(extracted?.organizationName)
       const organizationQuote=str(extracted?.organizationQuote)
       const organizationSupported=orderedEvidenceMatch(documentText,organizationName)
@@ -456,7 +486,7 @@ ${documentText}`}],1000,0)
       const startDate=str(extracted?.startDate),endDate=str(extracted?.endDate)
       const supportedDate=value=>!value||orderedEvidenceMatch(documentText,value)||dateQuotes.some(quote=>normalizeEvidenceText(quote).includes(normalizeEvidenceText(value)))
       const acceptedOrganizationQuote=validOrganization?(evidenceLinesForLabel(documentText,organizationName,1)[0]||organizationQuote):''
-      res.status(200).json({organizationName:validOrganization?organizationName:'',organizationQuote:acceptedOrganizationQuote,startDate:supportedDate(startDate)?startDate:'',endDate:supportedDate(endDate)?endDate:'',dateQuotes});return
+      res.status(200).json({guestName:guestNameSupported?guestName:'',guestNameQuote:guestNameSupported?(evidenceLinesForLabel(documentText,guestName,1)[0]||guestNameQuote):'',organizationName:validOrganization?organizationName:'',organizationQuote:acceptedOrganizationQuote,startDate:supportedDate(startDate)?startDate:'',endDate:supportedDate(endDate)?endDate:'',dateQuotes});return
     }
     if(i.mode==='classify-case-type'){
       const documentText=str(i.documentText)

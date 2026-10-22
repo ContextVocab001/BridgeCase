@@ -98,6 +98,7 @@ export async function prepareStructuredCase(input: PrepareCaseInput): Promise<Ca
 
 export function buildCaseReviewData(preparation: CasePreparation): CaseReviewData {
   const confirmedFacts: CaseReviewData['confirmedFacts'] = []
+  if (preparation.caseContext.guestName) confirmedFacts.push({ key:'guestName', label:'Guest name', value:preparation.caseContext.guestName, source:'document' })
   if (preparation.caseContext.organizationName) confirmedFacts.push({ key:'organization', label:'Organization', value:preparation.caseContext.organizationName, source:'document' })
   if (preparation.caseContext.startDate) confirmedFacts.push({ key:'startDate', label:'Start date', value:preparation.caseContext.startDate, source:'document' })
   if (preparation.caseContext.endDate) confirmedFacts.push({ key:'endDate', label:'End date', value:preparation.caseContext.endDate, source:'document' })
@@ -114,7 +115,7 @@ export function buildCaseReviewData(preparation: CasePreparation): CaseReviewDat
     userStatements:preparation.userStructure.claims.map(claim=>claim.statement),
     requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.totalAmount, currency:aggregation?.currencyCode },
     primaryIdentifier:primary,
-    readiness:{ ready:Boolean(preparation.caseContext.organizationName&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.organizationName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
+    readiness:{ ready:Boolean(preparation.caseContext.guestName&&primary&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.organizationName), hasGuestName:Boolean(preparation.caseContext.guestName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
   }
 }
 export async function translateApprovedDraft(input: AnalyzeCaseInput): Promise<{subject:string;body:string}> { return post({...input,mode:'translate'}) }
