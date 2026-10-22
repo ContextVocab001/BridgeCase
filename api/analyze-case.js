@@ -24,31 +24,47 @@ function parseTrailingAmount(line){
   return Number.isFinite(amount)?Math.round(amount*100)/100:null
 }
 function normalizeOcrText(value){return str(value).toLowerCase().replace(/[‐‑‒–—]/g,'-').replace(/\s+/g,' ').trim()}
-function aggregateSelectedCharge(documentText,selectedLabel){
-  const label=str(selectedLabel),currency=detectDocumentCurrency(documentText)
-  if(!label)return{selectedLabel:'',currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:0,totalAmount:0,amountGroups:[],evidenceLines:[]}
-  const lines=str(documentText).split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
-  const normalizedLabel=normalizeOcrText(label),matches=[]
-  for(let index=0;index<lines.length;index+=1){
-    if(!normalizeOcrText(lines[index]).includes(normalizedLabel))continue
-    let amount=parseTrailingAmount(lines[index]),amountIndex=index
-    if(amount===null){
-      for(const candidateIndex of [index+1,index+2,index+3,index-1]){
-        if(candidateIndex<0||candidateIndex>=lines.length)continue
-        const candidateAmount=parseTrailingAmount(lines[candidateIndex])
-        if(candidateAmount!==null){amount=candidateAmount;amountIndex=candidateIndex;break}
-      }
-    }
-    if(amount!==null){
-      const evidence=amountIndex===index?lines[index]:`${lines[index]} | ${lines[amountIndex]}`
-      matches.push({amount,evidence})
-    }
+function allOccurrences(text,needle){const result=[];let from=0;while(needle&&from<text.length){const index=text.indexOf(needle,from);if(index<0)break;result.push(index);from=index+Math.max(1,needle.length)}return result}
+function chargeOccurrenceWindows(documentText,selectedLabel){
+  const normalizedText=normalizeOcrText(documentText),normalizedLabel=normalizeOcrText(selectedLabel),positions=allOccurrences(normalizedText,normalizedLabel)
+  return positions.map((position,index)=>{
+    const next=positions[index+1]??Math.min(normalizedText.length,position+420)
+    const previous=index?positions[index-1]+normalizedLabel.length:Math.max(0,position-120)
+    const start=Math.max(previous,position-120),end=Math.min(normalizedText.length,Math.max(position+normalizedLabel.length+180,next))
+    return{occurrence:index+1,text:normalizedText.slice(start,end)}
+  })
+}
+function fallbackOccurrenceAggregation(documentText,selectedLabel){
+  const currency=detectDocumentCurrency(documentText),windows=chargeOccurrenceWindows(documentText,selectedLabel),matches=[]
+  for(const window of windows){
+    const label=normalizeOcrText(selectedLabel),after=window.text.slice(window.text.indexOf(label)+label.length)
+    const values=[...after.matchAll(/-?\d{1,3}(?:,\d{3})*\.\d{2}/g)].map(match=>Number(match[0].replace(/,/g,''))).filter(Number.isFinite)
+    if(values.length)matches.push({amount:values[0],evidence:window.text})
   }
-  const amounts=matches.map(match=>match.amount),grouped=new Map()
-  for(const amount of amounts){const key=amount.toFixed(2),current=grouped.get(key)||{unitAmount:amount,count:0,subtotal:0};current.count+=1;current.subtotal=Math.round((current.subtotal+amount)*100)/100;grouped.set(key,current)}
-  const amountGroups=[...grouped.values()]
-  const totalAmount=Math.round(amounts.reduce((sum,amount)=>sum+amount,0)*100)/100
-  return{selectedLabel:label,currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:matches.length,totalAmount,amountGroups,evidenceLines:matches.map(match=>match.evidence)}
+  const grouped=new Map()
+  for(const match of matches){const key=match.amount.toFixed(2),current=grouped.get(key)||{unitAmount:match.amount,count:0,subtotal:0};current.count+=1;current.subtotal=Math.round((current.subtotal+match.amount)*100)/100;grouped.set(key,current)}
+  return{selectedLabel:str(selectedLabel),currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:matches.length,totalAmount:Math.round(matches.reduce((sum,match)=>sum+match.amount,0)*100)/100,amountGroups:[...grouped.values()],evidenceLines:matches.map(match=>match.evidence)}
+}
+function validateChargeBlocks(raw,documentText,selectedLabel){
+  const text=normalizeOcrText(documentText),label=normalizeOcrText(selectedLabel),blocks=Array.isArray(raw?.blocks)?raw.blocks:[],valid=[]
+  for(const block of blocks){
+    const quote=normalizeOcrText(block?.evidenceQuote),effectiveAmount=Number(block?.effectiveAmount),quantity=Number(block?.quantity||1),role=str(block?.role)
+    if(!quote||!text.includes(quote)||!quote.includes(label)||!Number.isFinite(effectiveAmount)||!Number.isFinite(quantity)||quantity<=0)continue
+    if(!['recurring-charge','single-charge','quantity-subtotal','adjustment','refund'].includes(role))continue
+    const numericTokens=[...quote.matchAll(/-?\d{1,3}(?:,\d{3})*\.\d{2}/g)].map(match=>Number(match[0].replace(/,/g,'')))
+    if(!numericTokens.some(value=>Math.abs(Math.abs(value)-Math.abs(effectiveAmount))<0.001))continue
+    valid.push({evidenceQuote:quote,effectiveAmount:Math.round(effectiveAmount*100)/100,quantity,role})
+  }
+  return valid
+}
+function aggregateValidatedBlocks(documentText,selectedLabel,blocks){
+  const currency=detectDocumentCurrency(documentText),grouped=new Map(),evidenceLines=[]
+  for(const block of blocks){
+    const perItem=block.quantity>1?Math.round(block.effectiveAmount/block.quantity*100)/100:block.effectiveAmount
+    const key=perItem.toFixed(2),current=grouped.get(key)||{unitAmount:perItem,count:0,subtotal:0}
+    current.count+=block.quantity;current.subtotal=Math.round((current.subtotal+block.effectiveAmount)*100)/100;grouped.set(key,current);evidenceLines.push(block.evidenceQuote)
+  }
+  return{selectedLabel:str(selectedLabel),currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:blocks.reduce((sum,block)=>sum+block.quantity,0),totalAmount:Math.round(blocks.reduce((sum,block)=>sum+block.effectiveAmount,0)*100)/100,amountGroups:[...grouped.values()],evidenceLines}
 }
 const IDENTIFIER_RULES={
   hotel:[
@@ -186,12 +202,29 @@ ${documentText}`
       res.status(200).json({selectedLabel,documentQuotes,userClaimCodes,confidence,reason:str(selected?.reason)});return
     }
     if(i.mode==='aggregate-selected-charge'){
-      const selectedLabel=str(i.selectedLabel)
-      const documentText=str(i.documentText)
+      const selectedLabel=str(i.selectedLabel),documentText=str(i.documentText)
       if(!selectedLabel||!documentText){res.status(400).json({error:'Selected charge label and OCR text are required.'});return}
-      if(!documentText.includes(selectedLabel)){res.status(400).json({error:'Selected charge label was not found in OCR text.'});return}
-      const aggregation=aggregateSelectedCharge(documentText,selectedLabel)
-      if(!aggregation.lineCount){res.status(422).json({error:'No amount-bearing OCR lines matched the selected charge label.'});return}
+      if(!normalizeOcrText(documentText).includes(normalizeOcrText(selectedLabel))){res.status(400).json({error:'Selected charge label was not found in OCR text.'});return}
+      const windows=chargeOccurrenceWindows(documentText,selectedLabel)
+      const blockSystem=`Structure every occurrence of the selected disputed charge into independent charge blocks. Return JSON only.
+OUTPUT SHAPE:
+{"blocks":[{"evidenceQuote":"","role":"recurring-charge|single-charge|quantity-subtotal|adjustment|refund","quantity":1,"unitAmount":0,"subtotal":0,"effectiveAmount":0}]}
+RULES:
+- Use only OCR_TEXT and SELECTED_LABEL.
+- Find every occurrence of SELECTED_LABEL, including repeated occurrences inside one long OCR line.
+- evidenceQuote must be an exact contiguous quote from OCR_TEXT containing SELECTED_LABEL and the amount used for that block.
+- If one occurrence is a normal repeated charge, quantity is 1 and effectiveAmount is that occurrence's charge.
+- If one occurrence states quantity, unit price, and subtotal, use role quantity-subtotal and effectiveAmount equal to the subtotal. Do not add both unit price and subtotal.
+- If the same selected charge appears separately for different dates, segments, passengers, or rental days, return one block per occurrence.
+- Include a negative adjustment or refund only when the quote explicitly connects it to SELECTED_LABEL. Use a negative effectiveAmount.
+- Do not infer quantity from date ranges, hotel nights, rental duration, flight segments, or passenger count.
+- Do not include taxes unless the quote explicitly identifies that tax as part of SELECTED_LABEL.
+- Ignore unrelated totals, balances, deposits, payment lines, and card transactions.
+- Do not draft text or decide whether the charge is valid.`
+      const structured=await call(key,model,[{role:'system',content:blockSystem},{role:'user',content:`SELECTED_LABEL:\n${selectedLabel}\n\nOCCURRENCE_WINDOWS:\n${JSON.stringify(windows)}\n\nOCR_TEXT:\n${documentText}`}],2200,0)
+      const blocks=validateChargeBlocks(structured,documentText,selectedLabel)
+      const aggregation=blocks.length?aggregateValidatedBlocks(documentText,selectedLabel,blocks):fallbackOccurrenceAggregation(documentText,selectedLabel)
+      if(!aggregation.lineCount){res.status(422).json({error:'No validated charge occurrences matched the selected charge label.'});return}
       res.status(200).json(aggregation);return
     }
     if(i.mode==='extract-case-context'){
@@ -215,7 +248,8 @@ ${documentText}`}],1000,0)
       const documentLines=documentText.split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean)
       const organizationName=str(extracted?.organizationName)
       const organizationQuote=str(extracted?.organizationQuote)
-      const validOrganization=organizationName&&documentLines.includes(organizationQuote)&&organizationQuote.includes(organizationName)
+      const normalizedDocument=normalizeOcrText(documentText),normalizedOrganization=normalizeOcrText(organizationName),normalizedQuote=normalizeOcrText(organizationQuote)
+      const validOrganization=organizationName&&organizationQuote&&normalizedDocument.includes(normalizedQuote)&&normalizedQuote.includes(normalizedOrganization)
       const dateQuotes=arr(extracted?.dateQuotes).filter(quote=>documentLines.includes(quote)).slice(0,3)
       const startDate=str(extracted?.startDate),endDate=str(extracted?.endDate)
       const supportedDate=value=>!value||dateQuotes.some(quote=>quote.includes(value))
