@@ -150,39 +150,89 @@ function normalize(raw,model,sourceText=''){
   return{confirmedFacts:facts,userStatements:arr(raw?.userStatements),requestedOutcome:str(raw?.requestedOutcome),readiness:{ready:coreReady,targetIdentified:Boolean(raw?.readiness?.targetIdentified),transactionIdentified:Boolean(raw?.readiness?.transactionIdentified),issueIdentified:Boolean(raw?.readiness?.issueIdentified),outcomeIdentified:Boolean(raw?.readiness?.outcomeIdentified),missingFields:coreReady?[]:missing},messageSource:{senderName:str(m.senderName),senderEmail:str(m.senderEmail),replyTo:str(m.replyTo),subject:str(m.subject),date:str(m.date),isForwarded:Boolean(m.isForwarded),isNoReply:Boolean(m.isNoReply),noReplyReason:str(m.noReplyReason),attachments:arr(m.attachments)},referenceInformation:info,contactCandidates:contacts,draft:{subject:str(raw?.draft?.subject),body:cleanDraftText(raw?.draft?.body)},meta:{mode:'nebius',model}}
 }
 
-function normalizedProtected(value){return str(value).normalize('NFKC').replace(/[‐‑‒–—]/g,'-').replace(/\s+/g,' ').trim()}
-function numericTokens(value){return normalizedProtected(value).match(/(?:[$€£¥￥]\s*|\b(?:USD|EUR|GBP|JPY)\s*)?-?\d[\d,]*(?:\.\d+)?/gi)||[]}
-function dateTokens(value){return normalizedProtected(value).match(/\b(?:\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4})\b/gi)||[]}
+function normalizedProtected(value){
+  return str(value).normalize('NFKC').replace(/[‐‑‒–—−]/g,'-').replace(/[\u00A0\s]+/g,' ').trim()
+}
+function canonicalIdentifier(value){return normalizedProtected(value).toUpperCase().replace(/[^\p{L}\p{N}]/gu,'')}
+function canonicalNumber(raw){
+  let value=normalizedProtected(raw).replace(/[^\d,.-]/g,'')
+  if(!value)return null
+  const negative=value.startsWith('-'); value=value.replace(/-/g,'')
+  const comma=value.lastIndexOf(','),dot=value.lastIndexOf('.')
+  if(comma>=0&&dot>=0){const decimal=comma>dot?',':'.';value=value.split(decimal==='.'?',':'.').join('');value=value.replace(decimal,'.')}
+  else if(comma>=0){const trailing=value.length-comma-1;value=trailing===2?value.replace(',','.'):value.replace(/,/g,'')}
+  else if(dot>=0){const trailing=value.length-dot-1;if(trailing!==2)value=value.replace(/\./g,'')}
+  const parsed=Number((negative?'-':'')+value)
+  return Number.isFinite(parsed)?parsed:null
+}
+function currencyCode(token){
+  const value=normalizedProtected(token).toUpperCase().replace(/\s/g,'')
+  if(value.includes('USD')||value.includes('US$')||value.includes('$'))return'USD'
+  if(value.includes('EUR')||value.includes('€'))return'EUR'
+  if(value.includes('GBP')||value.includes('£'))return'GBP'
+  if(value.includes('JPY')||value.includes('¥')||value.includes('￥'))return'JPY'
+  return''
+}
+function extractMoney(value){
+  const text=normalizedProtected(value)
+  const pattern=/(?:USD|US\$|EUR|GBP|JPY|[$€£¥￥])\s*-?\d[\d.,]*|-?\d[\d.,]*\s*(?:USD|US\$|EUR|GBP|JPY|[$€£¥￥])/gi
+  return(text.match(pattern)||[]).map(raw=>({currency:currencyCode(raw),amount:canonicalNumber(raw),raw})).filter(x=>x.currency&&x.amount!==null)
+}
+function moneyKey(x){return`${x.currency}:${Number(x.amount).toFixed(2)}`}
+function extractDates(value){
+  const text=normalizedProtected(value)
+  const found=text.match(/\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4})\b/gi)||[]
+  return found.map(x=>normalizedProtected(x).toUpperCase())
+}
 function protectedDraftData(review){
   const facts=Array.isArray(review?.confirmedFacts)?review.confirmedFacts.map(x=>({key:str(x?.key),label:str(x?.label),value:str(x?.value),source:str(x?.source)})).filter(x=>x.label&&x.value):[]
   const statements=arr(review?.userStatements)
-  const requested=review?.requestedOutcome&&typeof review.requestedOutcome==='object'?{code:str(review.requestedOutcome.code),statement:str(review.requestedOutcome.statement),amount:Number.isFinite(Number(review.requestedOutcome.amount))?Number(review.requestedOutcome.amount):undefined,currency:str(review.requestedOutcome.currency)}:{code:'OTHER',statement:''}
+  const requested=review?.requestedOutcome&&typeof review.requestedOutcome==='object'?{code:str(review.requestedOutcome.code),statement:str(review.requestedOutcome.statement),amount:Number.isFinite(Number(review.requestedOutcome.amount))?Number(review.requestedOutcome.amount):undefined,currency:str(review.requestedOutcome.currency).toUpperCase()}:{code:'OTHER',statement:''}
   const primary=review?.primaryIdentifier&&typeof review.primaryIdentifier==='object'?{type:str(review.primaryIdentifier.type),label:str(review.primaryIdentifier.label),value:str(review.primaryIdentifier.value)}:null
   return{caseType:str(review?.caseType)||'other',facts,statements,requested,primary}
 }
-function collectProtectedValues(data){
-  const values=[]
-  for(const fact of data.facts)values.push(fact.value)
-  if(data.primary?.value)values.push(data.primary.value)
-  if(Number.isFinite(data.requested?.amount))values.push(`${data.requested.currency?data.requested.currency+' ':''}${Number(data.requested.amount).toFixed(2)}`.trim())
-  return[...new Set(values.map(normalizedProtected).filter(Boolean))]
+function expectedMoney(data){
+  const records=[]
+  for(const fact of data.facts)records.push(...extractMoney(fact.value))
+  if(Number.isFinite(data.requested?.amount)&&data.requested.currency)records.push({currency:data.requested.currency,amount:Number(data.requested.amount),raw:'requestedOutcome'})
+  return new Map(records.map(x=>[moneyKey(x),x]))
 }
-function protectedSignature(data){
-  const source=[...data.facts.map(x=>x.value),data.primary?.value||'',Number.isFinite(data.requested?.amount)?`${data.requested.currency||''} ${Number(data.requested.amount).toFixed(2)}`:''].join('\n')
-  return{numbers:numericTokens(source).map(normalizedProtected).sort(),dates:dateTokens(source).map(normalizedProtected).sort(),identifier:data.primary?.value?normalizedProtected(data.primary.value):''}
+function expectedDates(data){return new Set(data.facts.flatMap(x=>extractDates(x.value)))}
+function includesEquivalentDate(text,expected){
+  if(normalizedProtected(text).toUpperCase().includes(expected))return true
+  const parts=expected.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/)
+  if(!parts)return false
+  const[,year,month,day]=parts
+  const candidates=[`${month}/${day}/${year}`,`${month}-${day}-${year}`,`${year}/${month}/${day}`,`${year}-${month}-${day}`]
+  return candidates.some(x=>normalizedProtected(text).includes(x))
 }
-function sameMultiset(a,b){return a.length===b.length&&a.every((x,i)=>x===b[i])}
-function validateProtectedDraft(result,data){
+function validateProtectedDraft(result,data,context='ai'){
   const subject=str(result?.subject),body=cleanDraftText(result?.body),combined=normalizedProtected(`${subject}\n${body}`)
   if(!subject||!body)return{ok:false,reason:'Draft is incomplete.'}
-  const protectedValues=collectProtectedValues(data)
-  for(const value of protectedValues){if(!combined.includes(value))return{ok:false,reason:`Protected value missing or changed: ${value}`}}
-  const expected=protectedSignature(data)
-  const actualNumbers=numericTokens(combined).map(normalizedProtected).sort()
-  const actualDates=dateTokens(combined).map(normalizedProtected).sort()
-  if(!sameMultiset(actualNumbers,expected.numbers))return{ok:false,reason:'Amount, quantity, date, or numeric identifier mismatch.'}
-  if(!sameMultiset(actualDates,expected.dates))return{ok:false,reason:'Date mismatch.'}
-  if(expected.identifier&&!combined.includes(expected.identifier))return{ok:false,reason:'Primary identifier mismatch.'}
+
+  const allowedMoney=expectedMoney(data)
+  const actualMoney=new Map(extractMoney(combined).map(x=>[moneyKey(x),x]))
+  for(const key of actualMoney.keys())if(!allowedMoney.has(key))return{ok:false,reason:`Unconfirmed monetary value detected: ${key}`}
+  if(Number.isFinite(data.requested?.amount)&&data.requested.currency){
+    const required=moneyKey({currency:data.requested.currency,amount:data.requested.amount})
+    const numberPresent=combined.includes(Number(data.requested.amount).toFixed(2))||combined.includes(String(Number(data.requested.amount)))
+    if(!actualMoney.has(required)&&!numberPresent)return{ok:false,reason:`Requested amount missing or changed: ${required}`}
+  }
+
+  if(data.primary?.value){
+    const expected=canonicalIdentifier(data.primary.value),actual=canonicalIdentifier(combined)
+    if(expected&&!actual.includes(expected))return{ok:false,reason:`Primary identifier missing or changed: ${data.primary.value}`}
+  }
+
+  for(const expected of expectedDates(data))if(!includesEquivalentDate(combined,expected))return{ok:false,reason:`Confirmed date missing or changed: ${expected}`}
+
+  const countFacts=data.facts.filter(x=>/count|quantity|件数|数量|回数|containers?|nights?|days?/i.test(`${x.key} ${x.label}`))
+  for(const fact of countFacts){
+    const match=normalizedProtected(fact.value).match(/\d+/)
+    if(match&&!new RegExp(`(^|\\D)${match[0]}(\\D|$)`).test(combined))return{ok:false,reason:`Confirmed count missing or changed: ${fact.value}`}
+  }
+
+  console.info('Protected draft validation passed',{context,allowedMoney:[...allowedMoney.keys()],actualMoney:[...actualMoney.keys()],identifier:data.primary?.value||'',dates:[...expectedDates(data)]})
   return{ok:true,subject,body}
 }
 function safeProtectedDraft(data,language){
@@ -191,12 +241,11 @@ function safeProtectedDraft(data,language){
   const statements=data.statements.map(x=>`- ${x}`)
   const request=data.requested.statement
   const issueLabel=data.facts.find(x=>/charge|item|明細|cargo/i.test(x.label))?.value||''
-  const subjectParts=[request,issueLabel,identifier].filter(Boolean)
+  const subjectParts=[issueLabel,identifier].filter(Boolean)
   if(language==='ja')return{subject:subjectParts.join(' / ')||'お問い合わせ',body:['ご担当者様','','以下の件についてお問い合わせいたします。','',identifier,...factLines,...statements,'',request,'','ご確認のほど、よろしくお願いいたします。'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
   if(language==='es')return{subject:subjectParts.join(' / ')||'Consulta',body:['A quien corresponda:','','Me comunico en relación con el siguiente asunto.','',identifier,...factLines,...statements,'',request,'','Gracias por su ayuda.','Atentamente,'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
   return{subject:subjectParts.join(' / ')||'Inquiry',body:['To whom it may concern,','','I am contacting you regarding the following matter.','',identifier,...factLines,...statements,'',request,'','Thank you for your assistance.','Best regards,'].filter((x,i,a)=>x||(i&&a[i-1])).join('\n').trim()}
 }
-
 export const config={maxDuration:60}
 export default async function handler(req,res){
   if(req.method!=='POST'){res.status(405).json({error:'Method not allowed.'});return}
@@ -220,12 +269,13 @@ Never output placeholders.`
       for(let attempt=1;attempt<=2;attempt++){
         const retry=attempt===2?`\nPREVIOUS OUTPUT FAILED PROGRAMMATIC VALIDATION: ${lastReason}. Generate again from FIXED_STRUCTURED_DATA only.`:''
         const generated=await call(key,model,[{role:'system',content:draftSystem+retry},{role:'user',content:`FIXED_STRUCTURED_DATA:\n${fixedJson}`}],2200,0)
-        const checked=validateProtectedDraft(generated,data)
+        const checked=validateProtectedDraft(generated,data,`ai-attempt-${attempt}`)
         if(checked.ok){res.status(200).json({subject:checked.subject,body:checked.body,generationMode:'ai',validationAttempts:attempt});return}
         lastReason=checked.reason
+        console.warn('Protected draft validation failed',{attempt,reason:lastReason})
       }
       const safe=safeProtectedDraft(data,str(i.interfaceLanguage)||'en')
-      const checked=validateProtectedDraft(safe,data)
+      const checked=validateProtectedDraft(safe,data,'safe-template')
       if(!checked.ok)throw new Error(`Safe template validation failed: ${checked.reason}`)
       res.status(200).json({...safe,generationMode:'safe-template',validationAttempts:2});return
     }
