@@ -98,6 +98,7 @@ export async function prepareStructuredCase(input: PrepareCaseInput): Promise<Ca
 
 export function buildCaseReviewData(preparation: CasePreparation): CaseReviewData {
   const confirmedFacts: CaseReviewData['confirmedFacts'] = []
+  // Preserve the document-confirmed guest name for the protected email-draft layer.
   if (preparation.caseContext.guestName) confirmedFacts.push({ key:'guestName', label:'Guest name', value:preparation.caseContext.guestName, source:'document' })
   if (preparation.caseContext.organizationName) confirmedFacts.push({ key:'organization', label:'Organization', value:preparation.caseContext.organizationName, source:'document' })
   if (preparation.caseContext.startDate) confirmedFacts.push({ key:'startDate', label:'Start date', value:preparation.caseContext.startDate, source:'document' })
@@ -118,7 +119,7 @@ export function buildCaseReviewData(preparation: CasePreparation): CaseReviewDat
     userExplanation:{ event:eventClaims.map(claim=>claim.statement).join('。'), reason:reasonClaims.map(claim=>claim.statement).join('。'), reasonProvided:reasonClaims.length>0 },
     requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.totalAmount, currency:aggregation?.currencyCode },
     primaryIdentifier:primary,
-    readiness:{ ready:Boolean(preparation.caseContext.organizationName&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.organizationName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
+    readiness:{ ready:Boolean(preparation.caseContext.organizationName&&preparation.userStructure.requestedAction.statement&&reasonClaims.length), hasOrganization:Boolean(preparation.caseContext.organizationName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
   }
   return review as CaseReviewData & { userExplanation: { event:string; reason:string; reasonProvided:boolean } }
 }
