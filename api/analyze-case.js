@@ -373,17 +373,10 @@ function buildDeterministicSubject(data,language){
   if(action==='EXPLANATION')return`Request for clarification about the ${topic}`
   return'Inquiry'
 }
-function localizedIdentifierLabel(label,language){
-  const value=normalizedProtected(label)
-  if(language==='ja'){if(/folio/i.test(value))return'Folio番号';if(/reservation|booking|confirmation/i.test(value))return'予約番号';return'識別番号'}
-  if(language==='es'){if(/folio/i.test(value))return'número de folio';if(/reservation|booking|confirmation/i.test(value))return'número de reserva';return'número de referencia'}
-  return value
-}
 function paragraphSlots(data,language){
   const guest=data.facts.find(x=>x.key==='guestName')?.value||''
   const identifier=data.primary?.value||''
-  const rawIdentifierLabel=data.primary?.label||'Reference number'
-  const identifierLabel=localizedIdentifierLabel(rawIdentifierLabel,language)
+  const identifierLabel=normalizedProtected(data.primary?.label||'Reference ID')
   const identity={}
   if(guest)identity.GUEST_NAME=guest
   if(identifier){identity.PRIMARY_IDENTIFIER_LABEL=identifierLabel;identity.PRIMARY_IDENTIFIER=identifier}
@@ -429,43 +422,25 @@ function sourceHasRefundRequest(source,language){
   if(language==='es')return /reembolso|devoluci[oó]n/.test(value)
   return /refund|reimburse/.test(value)
 }
-function deterministicIdentityParagraph(language,slots,caseType='other',primaryType=''){
+function deterministicIdentityParagraph(language,slots){
   const hasName=Boolean(slots.identity.GUEST_NAME)
   const hasIdentifier=Boolean(slots.identity.PRIMARY_IDENTIFIER)
-  const confirmedHotelStay=caseType==='hotel'&&['FOLIO_NUMBER','CONFIRMATION_NUMBER','RESERVATION_NUMBER'].includes(primaryType)
-  const confirmedRental=caseType==='rental-car'&&['RENTAL_AGREEMENT_NUMBER','RESERVATION_NUMBER','CONFIRMATION_NUMBER'].includes(primaryType)
-  const confirmedAirTrip=caseType==='airline'&&['TICKET_NUMBER','PNR','CONFIRMATION_NUMBER'].includes(primaryType)
-  if(language==='ja'){
-    if(hasName&&hasIdentifier){
-      if(confirmedHotelStay)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。'
-      if(confirmedRental)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}のレンタルに関してお問い合わせしている{{GUEST_NAME}}です。'
-      if(confirmedAirTrip)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の利用に関してお問い合わせしている{{GUEST_NAME}}です。'
-      return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}に関してお問い合わせしている{{GUEST_NAME}}です。'
-    }
-    if(hasName)return'{{GUEST_NAME}}です。'
-    if(hasIdentifier)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の件でお問い合わせいたします。'
-    return'今回の請求についてお問い合わせいたします。'
-  }
-  if(language==='es'){
-    if(hasName&&hasIdentifier){
-      if(confirmedHotelStay)return'Soy {{GUEST_NAME}} y me comunico sobre mi estancia con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-      if(confirmedRental)return'Soy {{GUEST_NAME}} y me comunico sobre el alquiler con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-      if(confirmedAirTrip)return'Soy {{GUEST_NAME}} y me comunico sobre el viaje con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-      return'Soy {{GUEST_NAME}} y me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-    }
-    if(hasName)return'Soy {{GUEST_NAME}}.'
-    if(hasIdentifier)return'Me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-    return'Me comunico sobre este cargo.'
-  }
-  if(hasName&&hasIdentifier){
-    if(confirmedHotelStay)return'My name is {{GUEST_NAME}}, and I am writing regarding my stay under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-    if(confirmedRental)return'My name is {{GUEST_NAME}}, and I am writing regarding the rental under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-    if(confirmedAirTrip)return'My name is {{GUEST_NAME}}, and I am writing regarding the trip under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-    return'My name is {{GUEST_NAME}}, and I am writing regarding {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-  }
-  if(hasName)return'My name is {{GUEST_NAME}}.'
-  if(hasIdentifier)return'I am contacting you about {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-  return'I am contacting you about this charge.'
+  const identifierLine=hasIdentifier?'{{PRIMARY_IDENTIFIER_LABEL}}: {{PRIMARY_IDENTIFIER}}':''
+  if(hasName&&hasIdentifier)return`${identifierLine}\n{{GUEST_NAME}}`
+  if(hasIdentifier)return identifierLine
+  if(hasName)return'{{GUEST_NAME}}'
+  return''
+}
+function transactionContext(data){
+  const type=str(data.primary?.type)
+  if(data.caseType==='hotel'&&['FOLIO_NUMBER','CONFIRMATION_NUMBER','RESERVATION_NUMBER'].includes(type))return{code:'confirmed-stay',ja:'宿泊',en:'stay',es:'estancia'}
+  if(data.caseType==='rental-car'&&['RENTAL_AGREEMENT_NUMBER','RESERVATION_NUMBER','CONFIRMATION_NUMBER'].includes(type))return{code:'confirmed-rental',ja:'レンタル',en:'rental',es:'alquiler'}
+  if(data.caseType==='airline'&&['TICKET_NUMBER','PNR','CONFIRMATION_NUMBER'].includes(type))return{code:'confirmed-trip',ja:'利用',en:'trip',es:'viaje'}
+  return{code:'neutral-transaction',ja:'取引',en:'transaction',es:'transacción'}
+}
+function disputedItemEvidence(data){
+  const label=normalizedProtected(data.facts.find(x=>x.key==='chargeLabel')?.value||'')
+  return{label,opaqueNumberedLabel:Boolean(label&&/\b\D*\d+\b/.test(label))}
 }
 function composeStructuredMail(parts,data,language){
   const subject=buildDeterministicSubject(data,language)
@@ -477,15 +452,15 @@ function safeStructuredParts(data,language,slots,sourceText){
   const source=cleanDraftText(sourceText||data.userOriginalText||data.statements.join(language==='ja'?'。':'. '))
   const alreadyRequestsRefund=sourceHasRefundRequest(source,language)
   if(language==='ja')return{
-    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType,data.primary?.type),
+    identityParagraph:deterministicIdentityParagraph(language,slots),
     issueRequestParagraph:`${source}${source&&!/[。.!?]$/.test(source)?'。':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
   if(language==='es')return{
-    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType,data.primary?.type),
+    identityParagraph:deterministicIdentityParagraph(language,slots),
     issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
   return{
-    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType,data.primary?.type),
+    identityParagraph:deterministicIdentityParagraph(language,slots),
     issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
 }
@@ -550,7 +525,7 @@ export default async function handler(req,res){
       const rawSourceText=isRefinement?removeProtectedIdentityParagraph(extractEditableCore(i.currentBody,languageCode),slots):data.userOriginalText
       if(!rawSourceText){res.status(400).json({error:'The user-provided explanation is missing.'});return}
       const sourceText=protectSourceValues(rawSourceText,slots)
-      const identityParagraph=deterministicIdentityParagraph(languageCode,slots,data.caseType,data.primary?.type)
+      const identityParagraph=deterministicIdentityParagraph(languageCode,slots)
       const mailMeaning={
         caseType:data.caseType,
         mode:isRefinement?'REFINE_CURRENT_DRAFT':'CREATE_FROM_USER_INPUT',
@@ -559,12 +534,8 @@ export default async function handler(req,res){
         optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
         requiredIdentityPlaceholders:Object.keys(slots.identity),
         requiredIssuePlaceholders:Object.keys(slots.issue),
-        confirmedDisputedItem:data.facts.find(x=>x.key==='chargeLabel')?.value||'',
-        evidenceLimits:{
-          hotelStayConfirmed:data.caseType==='hotel'&&Boolean(data.primary&&['FOLIO_NUMBER','CONFIRMATION_NUMBER','RESERVATION_NUMBER'].includes(data.primary.type)),
-          rentalConfirmed:data.caseType==='rental-car'&&Boolean(data.primary&&['RENTAL_AGREEMENT_NUMBER','RESERVATION_NUMBER','CONFIRMATION_NUMBER'].includes(data.primary.type)),
-          airTripConfirmed:data.caseType==='airline'&&Boolean(data.primary&&['TICKET_NUMBER','PNR','CONFIRMATION_NUMBER'].includes(data.primary.type))
-        }
+        transactionContext:transactionContext(data),
+        disputedItemEvidence:disputedItemEvidence(data)
       }
       const system=`Rewrite the user-provided sourceText as one natural customer-email paragraph in ${ui}. Return JSON only as {"issueRequestParagraph":""}.
 
@@ -580,13 +551,13 @@ IMMUTABLE PLACEHOLDERS
 
 STRICT CONTENT RULES
 - Use only MAIL_MEANING. Do not infer, strengthen, calculate, or add facts.
-- Treat confirmedDisputedItem as a literal receipt label. Never interpret a number inside a label as a count, sequence, duplicate, installment, or frequency unless sourceText separately proves that meaning.
-- If sourceText questions an ambiguous label such as "Tax 2", preserve the user's concern as a question: quote the label, ask what it means or how it was calculated, and make any refund request conditional on the charge being incorrect. Do not state that the tax was charged twice as a confirmed fact.
-- caseType is only a category. Do not write stay, stayed, lodging, guest, rental, rented, flight, trip, or equivalent transaction-specific wording unless the matching evidenceLimits flag is true or sourceText explicitly states it.
-- When transaction-specific wording is not supported, use neutral wording such as transaction, charge, purchase, use, or inquiry.
-- Preserve identifier labels exactly through the protected identity paragraph. Do not replace Reference ID, Transaction Number, Folio Number, Rental Agreement Number, or similar labels with the generic word identifier.
-- sourceText is the ONLY prose source for the issue paragraph. Do not use structuredUserStatements, summaries, or the Step 2 display as drafting material.
-- If mode is CREATE_FROM_USER_INPUT, rewrite the user's original input without dropping any material detail.
+- sourceText is the ONLY prose source for the user's explanation and request. Do not use structuredUserStatements or the Step 2 display as drafting material.
+- transactionContext is program-owned. Use only its wording when transaction wording is needed. If transactionContext.code is neutral-transaction, do not write stay, stayed, accommodation, lodging, guest, booking, reservation, rental, rented, flight, trip, or equivalent wording unless sourceText itself explicitly says so.
+- disputedItemEvidence.label is a literal source label. Quote it exactly when discussing the disputed item.
+- If disputedItemEvidence.opaqueNumberedLabel is true, never treat the number in the label as a count, repetition, sequence, duplicate, installment, or frequency. If sourceText asks whether it means a duplicate charge, write that as a question, ask what the label means/how it was calculated, and make a refund request conditional on the charge being incorrect or duplicated.
+- Never create or paraphrase an identifier line inside issueRequestParagraph. The program adds the exact identifier label and value separately.
+- Do not add a sender name, role, signature, greeting, or closing.
+- If mode is CREATE_FROM_USER_INPUT, rewrite the user's original input without dropping any material reason, but convert unsupported conclusions into clearly framed questions.
 - If mode is REFINE_CURRENT_DRAFT, polish the currently displayed issue paragraph and preserve every manual addition or correction. Do not add another identity sentence or repeat the refund request.
 - Express the requested resolution once only, even if sourceText mentions it more than once.
 - Keep staff conversations as the user's reported experience. Do not strengthen them into a verified promise, admission, or established fact.
