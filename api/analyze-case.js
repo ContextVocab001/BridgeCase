@@ -429,14 +429,17 @@ function sourceHasRefundRequest(source,language){
   if(language==='es')return /reembolso|devoluci[oó]n/.test(value)
   return /refund|reimburse/.test(value)
 }
-function deterministicIdentityParagraph(language,slots,caseType='other'){
+function deterministicIdentityParagraph(language,slots,caseType='other',primaryType=''){
   const hasName=Boolean(slots.identity.GUEST_NAME)
   const hasIdentifier=Boolean(slots.identity.PRIMARY_IDENTIFIER)
+  const confirmedHotelStay=caseType==='hotel'&&['FOLIO_NUMBER','CONFIRMATION_NUMBER','RESERVATION_NUMBER'].includes(primaryType)
+  const confirmedRental=caseType==='rental-car'&&['RENTAL_AGREEMENT_NUMBER','RESERVATION_NUMBER','CONFIRMATION_NUMBER'].includes(primaryType)
+  const confirmedAirTrip=caseType==='airline'&&['TICKET_NUMBER','PNR','CONFIRMATION_NUMBER'].includes(primaryType)
   if(language==='ja'){
     if(hasName&&hasIdentifier){
-      if(caseType==='hotel')return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。'
-      if(caseType==='rental-car')return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}に関してお問い合わせしている{{GUEST_NAME}}です。'
-      if(caseType==='airline')return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}に関してお問い合わせしている{{GUEST_NAME}}です。'
+      if(confirmedHotelStay)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。'
+      if(confirmedRental)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}のレンタルに関してお問い合わせしている{{GUEST_NAME}}です。'
+      if(confirmedAirTrip)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の利用に関してお問い合わせしている{{GUEST_NAME}}です。'
       return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}に関してお問い合わせしている{{GUEST_NAME}}です。'
     }
     if(hasName)return'{{GUEST_NAME}}です。'
@@ -445,9 +448,9 @@ function deterministicIdentityParagraph(language,slots,caseType='other'){
   }
   if(language==='es'){
     if(hasName&&hasIdentifier){
-      if(caseType==='hotel')return'Soy {{GUEST_NAME}} y me comunico sobre mi estancia con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-      if(caseType==='rental-car')return'Soy {{GUEST_NAME}} y me comunico sobre el alquiler con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-      if(caseType==='airline')return'Soy {{GUEST_NAME}} y me comunico sobre el viaje con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+      if(confirmedHotelStay)return'Soy {{GUEST_NAME}} y me comunico sobre mi estancia con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+      if(confirmedRental)return'Soy {{GUEST_NAME}} y me comunico sobre el alquiler con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+      if(confirmedAirTrip)return'Soy {{GUEST_NAME}} y me comunico sobre el viaje con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
       return'Soy {{GUEST_NAME}} y me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
     }
     if(hasName)return'Soy {{GUEST_NAME}}.'
@@ -455,9 +458,9 @@ function deterministicIdentityParagraph(language,slots,caseType='other'){
     return'Me comunico sobre este cargo.'
   }
   if(hasName&&hasIdentifier){
-    if(caseType==='hotel')return'My name is {{GUEST_NAME}}, and I am writing regarding my stay under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-    if(caseType==='rental-car')return'My name is {{GUEST_NAME}}, and I am writing regarding the rental under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
-    if(caseType==='airline')return'My name is {{GUEST_NAME}}, and I am writing regarding the trip under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+    if(confirmedHotelStay)return'My name is {{GUEST_NAME}}, and I am writing regarding my stay under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+    if(confirmedRental)return'My name is {{GUEST_NAME}}, and I am writing regarding the rental under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+    if(confirmedAirTrip)return'My name is {{GUEST_NAME}}, and I am writing regarding the trip under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
     return'My name is {{GUEST_NAME}}, and I am writing regarding {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
   }
   if(hasName)return'My name is {{GUEST_NAME}}.'
@@ -474,15 +477,15 @@ function safeStructuredParts(data,language,slots,sourceText){
   const source=cleanDraftText(sourceText||data.userOriginalText||data.statements.join(language==='ja'?'。':'. '))
   const alreadyRequestsRefund=sourceHasRefundRequest(source,language)
   if(language==='ja')return{
-    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType),
+    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType,data.primary?.type),
     issueRequestParagraph:`${source}${source&&!/[。.!?]$/.test(source)?'。':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
   if(language==='es')return{
-    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType),
+    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType,data.primary?.type),
     issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
   return{
-    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType),
+    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType,data.primary?.type),
     issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
 }
@@ -547,7 +550,7 @@ export default async function handler(req,res){
       const rawSourceText=isRefinement?removeProtectedIdentityParagraph(extractEditableCore(i.currentBody,languageCode),slots):data.userOriginalText
       if(!rawSourceText){res.status(400).json({error:'The user-provided explanation is missing.'});return}
       const sourceText=protectSourceValues(rawSourceText,slots)
-      const identityParagraph=deterministicIdentityParagraph(languageCode,slots,data.caseType)
+      const identityParagraph=deterministicIdentityParagraph(languageCode,slots,data.caseType,data.primary?.type)
       const mailMeaning={
         caseType:data.caseType,
         mode:isRefinement?'REFINE_CURRENT_DRAFT':'CREATE_FROM_USER_INPUT',
@@ -555,7 +558,13 @@ export default async function handler(req,res){
         requestedOutcome:{code:data.requested.code,statement:data.requested.statement},
         optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
         requiredIdentityPlaceholders:Object.keys(slots.identity),
-        requiredIssuePlaceholders:Object.keys(slots.issue)
+        requiredIssuePlaceholders:Object.keys(slots.issue),
+        confirmedDisputedItem:data.facts.find(x=>x.key==='chargeLabel')?.value||'',
+        evidenceLimits:{
+          hotelStayConfirmed:data.caseType==='hotel'&&Boolean(data.primary&&['FOLIO_NUMBER','CONFIRMATION_NUMBER','RESERVATION_NUMBER'].includes(data.primary.type)),
+          rentalConfirmed:data.caseType==='rental-car'&&Boolean(data.primary&&['RENTAL_AGREEMENT_NUMBER','RESERVATION_NUMBER','CONFIRMATION_NUMBER'].includes(data.primary.type)),
+          airTripConfirmed:data.caseType==='airline'&&Boolean(data.primary&&['TICKET_NUMBER','PNR','CONFIRMATION_NUMBER'].includes(data.primary.type))
+        }
       }
       const system=`Rewrite the user-provided sourceText as one natural customer-email paragraph in ${ui}. Return JSON only as {"issueRequestParagraph":""}.
 
@@ -571,6 +580,11 @@ IMMUTABLE PLACEHOLDERS
 
 STRICT CONTENT RULES
 - Use only MAIL_MEANING. Do not infer, strengthen, calculate, or add facts.
+- Treat confirmedDisputedItem as a literal receipt label. Never interpret a number inside a label as a count, sequence, duplicate, installment, or frequency unless sourceText separately proves that meaning.
+- If sourceText questions an ambiguous label such as "Tax 2", preserve the user's concern as a question: quote the label, ask what it means or how it was calculated, and make any refund request conditional on the charge being incorrect. Do not state that the tax was charged twice as a confirmed fact.
+- caseType is only a category. Do not write stay, stayed, lodging, guest, rental, rented, flight, trip, or equivalent transaction-specific wording unless the matching evidenceLimits flag is true or sourceText explicitly states it.
+- When transaction-specific wording is not supported, use neutral wording such as transaction, charge, purchase, use, or inquiry.
+- Preserve identifier labels exactly through the protected identity paragraph. Do not replace Reference ID, Transaction Number, Folio Number, Rental Agreement Number, or similar labels with the generic word identifier.
 - sourceText is the ONLY prose source for the issue paragraph. Do not use structuredUserStatements, summaries, or the Step 2 display as drafting material.
 - If mode is CREATE_FROM_USER_INPUT, rewrite the user's original input without dropping any material detail.
 - If mode is REFINE_CURRENT_DRAFT, polish the currently displayed issue paragraph and preserve every manual addition or correction. Do not add another identity sentence or repeat the refund request.

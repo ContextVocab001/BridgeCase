@@ -467,10 +467,13 @@ function App() {
     } catch { return fact.value }
   }
 
-  const draftMissingItems = structuredReview ? [
-    !structuredReview.confirmedFacts.some(fact=>fact.key==='guestName') ? ui({en:'Guest name',ja:'宿泊者名',es:'Nombre del huésped'}) : '',
-    !structuredReview.primaryIdentifier ? ui({en:'Reservation, confirmation, or folio number',ja:'予約番号・確認番号・Folio番号のいずれか',es:'Número de reserva, confirmación o folio'}) : ''
-  ].filter(Boolean) : []
+  const draftMissingItems = structuredReview && !structuredReview.primaryIdentifier ? [
+    ui({
+      en:'A reservation, transaction, reference, confirmation, folio, order, or agreement number',
+      ja:'予約番号・取引番号・Reference ID・確認番号・Folio番号・注文番号・契約番号など、相手が取引を特定できる情報',
+      es:'Un número de reserva, transacción, referencia, confirmación, folio, pedido o contrato'
+    })
+  ] : []
 
   const review = (analysis || structuredReview) && (
     <main className="workflow-main">{progress(2)}<section className="workflow-heading"><p>{ui({en:'Step 2',ja:'ステップ2',es:'Paso 2'})}</p><h1>{ui({en:'Review your case',ja:'案件内容を確認',es:'Revisa tu caso'})}</h1><span>{ui({en:'Check the facts, your explanation, and the requested outcome before continuing.',ja:'資料から確認した事実、あなたの説明、希望する対応を確認してください。',es:'Comprueba los hechos, tu explicación y el resultado solicitado antes de continuar.'})}</span></section>
