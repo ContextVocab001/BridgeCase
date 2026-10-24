@@ -269,22 +269,34 @@ function App() {
         setDraftBody(result.draft.body)
       }
       setShowModal(false); go('review')
-    } catch (error) { setAnalysisError(error instanceof Error ? error.message : 'Analysis failed.') } finally { setIsAnalyzing(false) }
+    } catch (error) { setAnalysisError(friendlyError(error, 'Analysis failed.')) } finally { setIsAnalyzing(false) }
   }
+  const friendlyError = (error: unknown, fallback: string) => {
+    const message = error instanceof Error ? error.message : fallback
+    if (/overload|overloaded|busy|capacity|temporar|rate limit|Nebius 429|Nebius 502|Nebius 503|Nebius 504/i.test(message)) {
+      return ui({
+        en:'AI processing is currently busy. Please wait a moment and try again. Your inputs and uploaded files have been kept.',
+        ja:'現在AI処理が混み合っています。少し待ってから、もう一度お試しください。入力内容とアップロード済み資料は保持されています。',
+        es:'El procesamiento de IA está ocupado. Espere un momento y vuelva a intentarlo. Sus datos y archivos se conservaron.'
+      })
+    }
+    return message
+  }
+
   const refineDraft = async () => {
     if (!structuredReview) return
     setIsRefiningDraft(true); setAnalysisError('')
     try {
       const result = await generateProtectedDraft({ interfaceLanguage:language, review:structuredReview, additionalExplanation:draftAdditional, currentSubject:draftSubject, currentBody:draftBody })
       setDraftSubject(result.subject); setDraftBody(result.body); setTranslated({subject:'',body:''}); setTranslationApproved(false)
-    } catch (error) { setAnalysisError(error instanceof Error ? error.message : 'Draft refinement failed.') }
+    } catch (error) { setAnalysisError(friendlyError(error, 'Draft refinement failed.')) }
     finally { setIsRefiningDraft(false) }
   }
 
   const translateDraft = async () => {
     setIsAnalyzing(true); setAnalysisError('')
     try { const result = await translateApprovedDraft({ originalMessage:'', userRequest:'', interfaceLanguage:language, recipientLanguage, documents:[], approvedSubject:draftSubject, approvedBody:draftBody }); setTranslated(result); setTranslationApproved(false); go('translation') }
-    catch(error){ setAnalysisError(error instanceof Error ? error.message : 'Translation failed.') } finally { setIsAnalyzing(false) }
+    catch(error){ setAnalysisError(friendlyError(error, 'Translation failed.')) } finally { setIsAnalyzing(false) }
   }
   const changeLanguage = (lang: Lang) => {
     if (lang !== language) invalidateGeneratedResults()

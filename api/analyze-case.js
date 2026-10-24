@@ -4,7 +4,24 @@ const names={en:'English',ja:'Japanese',es:'Spanish','zh-CN':'Simplified Chinese
 const str=x=>typeof x==='string'?x.trim():''
 const arr=x=>Array.isArray(x)?x.map(str).filter(Boolean):[]
 function parse(content){const raw=typeof content==='string'?content:Array.isArray(content)?content.map(x=>typeof x==='string'?x:x?.text||'').join('\n'):'';const text=raw.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/```(?:json)?/gi,'').trim();try{return JSON.parse(text)}catch{}const a=text.indexOf('{'),b=text.lastIndexOf('}');if(a>=0&&b>a)return JSON.parse(text.slice(a,b+1));throw new Error('Invalid AI JSON')}
-async function call(key,model,messages,max_tokens=3800,temperature=.1){const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}if(!r.ok)throw new Error(data?.error?.message||`Nebius ${r.status}`);if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.');return parse(data?.choices?.[0]?.message?.content)}
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
+function isTransientAiError(status,message){return status===429||status===502||status===503||status===504||/overload|overloaded|busy|capacity|temporar|rate limit/i.test(str(message))}
+async function call(key,model,messages,max_tokens=3800,temperature=.1){
+  let lastError=null
+  for(let attempt=1;attempt<=2;attempt++){
+    const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})})
+    const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}
+    const message=data?.error?.message||`Nebius ${r.status}`
+    if(!r.ok){
+      lastError=new Error(message)
+      if(attempt===1&&isTransientAiError(r.status,message)){console.warn('Transient AI error; retrying once',{status:r.status,message});await sleep(1200);continue}
+      throw lastError
+    }
+    if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.')
+    return parse(data?.choices?.[0]?.message?.content)
+  }
+  throw lastError||new Error('AI service request failed.')
+}
 function search(label){return `https://www.google.com/search?q=${encodeURIComponent(`${label} official website contact`)}`}
 function urlsIn(text){return new Set((str(text).match(/https?:\/\/[^\s<>"')\]]+/gi)||[]).map(x=>x.replace(/[.,;:!?]+$/,'')))}
 function isUnrelatedIntermediary(label){return /(?:clover|stripe|square|adyen|braintree|worldpay|fiserv|first data|toast|lightspeed|shopify payments|visa|mastercard|american express|amex|discover|card issuer|payment processor|payment gateway|pos support|決済代行|決済処理|カード会社|カードブランド|銀行|pos事業者|posサポート)/i.test(str(label))}

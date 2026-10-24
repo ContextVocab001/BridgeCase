@@ -19,6 +19,8 @@ export type CaseAnalysis = {
   meta: { mode: 'nebius'; model?: string }
 }
 
+export type DraftCaseReviewData = CaseReviewData & { userOriginalText?: string }
+
 export type StructureUserInputInput = {
   userText: string
   interfaceLanguage: LanguageCode
@@ -61,7 +63,7 @@ export type PrepareCaseInput = {
   userText: string
   documentText: string
 }
-export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier' | 'generate-protected-draft'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string>; review?: CaseReviewData & { userOriginalText?: string }; additionalExplanation?: string; currentSubject?: string; currentBody?: string }
+export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier' | 'generate-protected-draft'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string>; review?: DraftCaseReviewData; additionalExplanation?: string; currentSubject?: string; currentBody?: string }
 
 async function readJson(response: Response) {
   const raw = await response.text()
@@ -79,7 +81,7 @@ async function post(input: AnalyzeCaseInput) {
   return payload
 }
 export async function analyzeCase(input: AnalyzeCaseInput): Promise<CaseAnalysis> { return post({...input,mode:'analyze'}) }
-export async function generateProtectedDraft(input: { interfaceLanguage: LanguageCode; review: CaseReviewData & { userOriginalText?: string }; additionalExplanation?: string; currentSubject?: string; currentBody?: string }): Promise<{subject:string;body:string;generationMode:'ai'|'safe-template';validationAttempts:number}> {
+export async function generateProtectedDraft(input: { interfaceLanguage: LanguageCode; review: DraftCaseReviewData; additionalExplanation?: string; currentSubject?: string; currentBody?: string }): Promise<{subject:string;body:string;generationMode:'ai'|'safe-template';validationAttempts:number}> {
   return post({mode:'generate-protected-draft',interfaceLanguage:input.interfaceLanguage,recipientLanguage:input.interfaceLanguage,review:input.review,additionalExplanation:input.additionalExplanation,currentSubject:input.currentSubject,currentBody:input.currentBody,originalMessage:'',userRequest:'',documents:[]})
 }
 
@@ -99,7 +101,7 @@ export async function prepareStructuredCase(input: PrepareCaseInput): Promise<Ca
   return { userStructure, caseClassification, caseContext, chargeSelection, chargeAggregation, identifierSelection }
 }
 
-export function buildCaseReviewData(preparation: CasePreparation): CaseReviewData {
+export function buildCaseReviewData(preparation: CasePreparation): DraftCaseReviewData {
   const confirmedFacts: CaseReviewData['confirmedFacts'] = []
   if (preparation.caseContext.guestName) confirmedFacts.push({ key:'guestName', label:'Guest name', value:preparation.caseContext.guestName, source:'document' })
   if (preparation.caseContext.organizationName) confirmedFacts.push({ key:'organization', label:'Organization', value:preparation.caseContext.organizationName, source:'document' })
