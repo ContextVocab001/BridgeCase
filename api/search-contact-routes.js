@@ -65,7 +65,18 @@ export default async function handler(req,res){
     {purpose:'general-support',query:`${entity} official customer support contact`}
   ]
   try{
-    const batches=await Promise.all(plans.map(async plan=>({plan,results:await braveSearch(key,plan.query)})))
+    console.info('Contact route lookup started',{keyConfigured:Boolean(key),entity,location,caseType,planCount:plans.length})
+    const batches=[]
+    for(const plan of plans){
+      try{
+        const results=await braveSearch(key,plan.query)
+        console.info('Contact route query completed',{purpose:plan.purpose,resultCount:results.length})
+        batches.push({plan,results})
+      }catch(error){
+        console.warn('Contact route query failed',{purpose:plan.purpose,error:error instanceof Error?error.message:String(error)})
+      }
+      if(plan!==plans[plans.length-1])await new Promise(resolve=>setTimeout(resolve,1100))
+    }
     const usedHosts=new Set(),usedUrls=new Set(),candidates=[]
     for(const {plan,results} of batches){
       const ranked=results.filter(result=>!isBlocked(result.url)&&entityMatch(result,entity)>=0.34).sort((a,b)=>score(b,entity,location,plan.purpose)-score(a,entity,location,plan.purpose))
@@ -75,7 +86,9 @@ export default async function handler(req,res){
       candidates.push({label:purposeLabel(plan.purpose),url:picked.url,kind:'official-page',purpose:plan.purpose,searchEntity:entity,locationName:location||undefined,recommended:plan.purpose==='case-contact',reason:picked.description||picked.title,sourceTitle:picked.title,sourceHost:hostOf(picked.url)})
     }
     if(!candidates.length)candidates.push(fallbackSearch(entity,location,caseType))
-    res.status(200).json({candidates,mode:candidates[0]?.kind==='search'?'search-fallback':'deep-search'})
+    const mode=candidates[0]?.kind==='search'?'search-fallback':'deep-search'
+    console.info('Contact route lookup completed',{mode,candidateCount:candidates.length,hosts:candidates.map(item=>item.sourceHost||hostOf(item.url))})
+    res.status(200).json({candidates,mode})
   }catch(error){
     console.error('Contact route search failed',error)
     res.status(200).json({candidates:[fallbackSearch(entity,location,caseType)],mode:'search-fallback',warning:'Contact route search failed.'})
