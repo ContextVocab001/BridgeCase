@@ -269,6 +269,17 @@ function expectedMoney(data){
       add(group.subtotal,'chargeAggregation.amountGroups.subtotal')
       if(Number.isFinite(group.unitAmount)&&Number.isFinite(group.count)&&group.count>0)add(group.unitAmount*group.count,'chargeAggregation.amountGroups.calculatedSubtotal')
     }
+
+    // If a valid amount was omitted from amountGroups, accept it only when the same
+    // currency and value appear in both the user's own explanation and the selected
+    // charge evidence. This covers layouts such as "3 @ $32.00  $96.00" without
+    // allowing unrelated receipt totals such as the overall rental total.
+    const userMoney=new Map(extractMoney(data.userOriginalText).map(item=>[moneyKey(item),item]))
+    const evidenceText=(summary.evidenceLines||[]).join('\n')
+    const evidenceMoney=new Map(extractMoney(evidenceText).map(item=>[moneyKey(item),item]))
+    for(const [key,item] of userMoney){
+      if(evidenceMoney.has(key))records.push({...item,raw:'corroborated:userOriginalText+chargeAggregation.evidenceLines'})
+    }
   }
   // Legacy fallback only for cases created before chargeAggregation became part of CaseReviewData.
   if(!records.length){for(const fact of data.facts)records.push(...extractMoney(fact.value))}
