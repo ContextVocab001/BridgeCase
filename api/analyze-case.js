@@ -271,7 +271,12 @@ function validateProtectedDraft(result,data,context='ai'){
     if(expected&&!actual.includes(expected))return{ok:false,reason:`Primary identifier missing or changed: ${data.primary.value}`}
   }
 
-  for(const expected of expectedDates(data))if(!includesEquivalentDate(combined,expected))return{ok:false,reason:`Confirmed date missing or changed: ${expected}`}
+  const allowedDates=[...expectedDates(data)]
+  const actualDates=extractDates(combined)
+  for(const actual of actualDates){
+    const supported=allowedDates.some(expected=>actual===expected||includesEquivalentDate(actual,expected)||includesEquivalentDate(expected,actual))
+    if(!supported)return{ok:false,reason:`Unconfirmed or changed date detected: ${actual}`}
+  }
 
   const countFacts=data.facts.filter(x=>/count|quantity|件数|数量|回数|containers?|nights?|days?/i.test(`${x.key} ${x.label}`))
   for(const fact of countFacts){
@@ -279,7 +284,7 @@ function validateProtectedDraft(result,data,context='ai'){
     if(match&&!new RegExp(`(^|\\D)${match[0]}(\\D|$)`).test(combined))return{ok:false,reason:`Confirmed count missing or changed: ${fact.value}`}
   }
 
-  console.info('Protected draft validation passed',{context,allowedMoney:[...allowedMoney.keys()],actualMoney:[...actualMoney.keys()],identifier:data.primary?.value||'',dates:[...expectedDates(data)]})
+  console.info('Protected draft validation passed',{context,allowedMoney:[...allowedMoney.keys()],actualMoney:[...actualMoney.keys()],identifier:data.primary?.value||'',allowedDates,actualDates})
   return{ok:true,subject,body}
 }
 function draftSlots(data){
@@ -367,21 +372,19 @@ function composeStructuredMail(parts,data,language){
   const issue=fillParagraph(parts.issueRequestParagraph,parts.slots.issue)
   return composeMail({subject,body:`${identity}\n\n${issue}`},language)
 }
-function safeStructuredParts(data,language,slots){
-  const label=slots.identity.PRIMARY_IDENTIFIER_LABEL
-  const statements=data.statements.join(language==='ja'?'。':'. ')
-  const request=data.requested.statement
+function safeStructuredParts(data,language,slots,sourceText){
+  const source=cleanDraftText(sourceText||data.userOriginalText||data.statements.join(language==='ja'?'。':'. '))
   if(language==='ja')return{
-    identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。`:slots.identity.GUEST_NAME?`{{GUEST_NAME}}です。`:slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の件でお問い合わせします。`:`今回の請求についてお問い合わせします。`,
-    issueRequestParagraph:`${statements}${statements&& !/[。.!?]$/.test(statements)?'。':''}${slots.issue.REFUND_AMOUNT?' この料金として請求された{{REFUND_AMOUNT}}について、返金をお願いいたします。':` ${request}`}`
+    identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。`:slots.identity.GUEST_NAME?`{{GUEST_NAME}}です。`:slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の件でお問い合わせいたします。`:`今回の請求についてお問い合わせいたします。`,
+    issueRequestParagraph:`${source}${source&&!/[。.!?]$/.test(source)?'。':''}${slots.issue.REFUND_AMOUNT?' 請求された{{REFUND_AMOUNT}}の返金をお願いいたします。':` ${data.requested.statement}`}`
   }
   if(language==='es')return{
     identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`Soy {{GUEST_NAME}} y mi {{PRIMARY_IDENTIFIER_LABEL}} es {{PRIMARY_IDENTIFIER}}.`:slots.identity.GUEST_NAME?`Soy {{GUEST_NAME}}.`:slots.identity.PRIMARY_IDENTIFIER?`Me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.`:`Me comunico sobre este cargo.`,
-    issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${slots.issue.REFUND_AMOUNT?' Solicito el reembolso de {{REFUND_AMOUNT}}.':` ${request}`}`
+    issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${slots.issue.REFUND_AMOUNT?' Solicito el reembolso de {{REFUND_AMOUNT}}.':` ${data.requested.statement}`}`
   }
   return{
     identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`My name is {{GUEST_NAME}}, and my {{PRIMARY_IDENTIFIER_LABEL}} is {{PRIMARY_IDENTIFIER}}.`:slots.identity.GUEST_NAME?`My name is {{GUEST_NAME}}.`:slots.identity.PRIMARY_IDENTIFIER?`I am contacting you about {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.`:`I am contacting you about this charge.`,
-    issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${slots.issue.REFUND_AMOUNT?' I am requesting a refund of {{REFUND_AMOUNT}}.':` ${request}`}`
+    issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${slots.issue.REFUND_AMOUNT?' I am requesting a refund of {{REFUND_AMOUNT}}.':` ${data.requested.statement}`}`
   }
 }
 function mailEnvelope(language){
@@ -397,6 +400,21 @@ function containsEnvelopeText(text,language){
       ?['estimado equipo de atención al cliente','a quien corresponda','atentamente','saludos cordiales','gracias por su atención']
       :['dear customer care team','dear customer service team','dear sir/madam','to whom it may concern','best regards','kind regards','regards,','sincerely','thank you for your assistance']
   return patterns.some(pattern=>value.includes(pattern.toLowerCase()))
+}
+function extractEditableCore(body,language){
+  let lines=cleanDraftText(body).split(/\r?\n/)
+  const envelope=mailEnvelope(language)
+  const greeting=normalizedProtected(envelope.greeting)
+  while(lines.length&&!normalizedProtected(lines[0]))lines.shift()
+  if(lines.length&&normalizedProtected(lines[0])===greeting)lines.shift()
+  while(lines.length&&!normalizedProtected(lines[0]))lines.shift()
+  const closingLines=envelope.closing.split(/\r?\n/).map(normalizedProtected).filter(Boolean)
+  while(lines.length&&!normalizedProtected(lines[lines.length-1]))lines.pop()
+  for(let i=closingLines.length-1;i>=0;i--){
+    while(lines.length&&!normalizedProtected(lines[lines.length-1]))lines.pop()
+    if(lines.length&&normalizedProtected(lines[lines.length-1])===closingLines[i])lines.pop()
+  }
+  return lines.join('\n').replace(/^\s+|\s+$/g,'').replace(/\n{3,}/g,'\n\n')
 }
 function composeMail(core,language){
   const envelope=mailEnvelope(language)
@@ -426,11 +444,13 @@ export default async function handler(req,res){
       const data=protectedDraftData(i.review)
       if(!data.facts.length||!data.statements.length||!data.requested.statement){res.status(400).json({error:'Confirmed case data is incomplete.'});return}
       const slots=paragraphSlots(data,languageCode)
+      const isRefinement=Boolean(str(i.currentBody))
+      const sourceText=isRefinement?extractEditableCore(i.currentBody,languageCode):data.userOriginalText
+      if(!sourceText){res.status(400).json({error:'The user-provided explanation is missing.'});return}
       const mailMeaning={
         caseType:data.caseType,
-        userOriginalText:data.userOriginalText,
-        structuredUserStatements:data.statements,
-        currentDraft:str(i.currentBody)?{subject:str(i.currentSubject),body:str(i.currentBody)}:null,
+        mode:isRefinement?'REFINE_CURRENT_DRAFT':'CREATE_FROM_USER_INPUT',
+        sourceText,
         requestedOutcome:{code:data.requested.code,statement:data.requested.statement},
         optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier','chargeSummary'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
         requiredIdentityPlaceholders:Object.keys(slots.identity),
@@ -439,8 +459,8 @@ export default async function handler(req,res){
       const system=`Write only two natural email paragraphs in ${ui}. Return JSON only as {"identityParagraph":"","issueRequestParagraph":""}.
 
 ROLE OF EACH PARAGRAPH
-1. identityParagraph: one concise sentence identifying the customer and the booking/transaction.
-2. issueRequestParagraph: two or three natural sentences explaining the user's issue and requested resolution.
+1. identityParagraph: one natural sentence identifying the customer and the booking/transaction.
+2. issueRequestParagraph: rewrite sourceText as a natural customer email paragraph. Preserve all material reasons, negations, chronology, staff conversations, and requested action. Use three to six complete sentences when sourceText contains several details.
 
 IMMUTABLE PLACEHOLDERS
 - identityParagraph must contain each placeholder in requiredIdentityPlaceholders exactly once.
@@ -449,16 +469,18 @@ IMMUTABLE PLACEHOLDERS
 
 STRICT CONTENT RULES
 - Use only MAIL_MEANING. Do not infer, strengthen, calculate, or add facts.
-- userOriginalText is the primary source for the user's issue, reason, background, negation, and requested action. Preserve every material meaning instead of summarizing it down to one point.
-- If currentDraft is present, improve that draft rather than replacing the user's meaning. Preserve the user's manual edits unless they conflict with protected confirmed values.
-- The user may describe a staff conversation. Keep it as the user's reported experience and do not strengthen it into a verified promise or admission.
+- sourceText is the ONLY prose source for the issue paragraph. Do not use structuredUserStatements, summaries, or the Step 2 display as drafting material.
+- If mode is CREATE_FROM_USER_INPUT, rewrite the user's original input without dropping any material detail.
+- If mode is REFINE_CURRENT_DRAFT, polish the currently displayed draft and preserve every manual addition or correction.
+- Keep staff conversations as the user's reported experience. Do not strengthen them into a verified promise, admission, or established fact.
+- Do not shorten a detailed sourceText into a generic statement. Preserve the reason for the request and the sequence of events.
 - Preserve the difference between confirmed document facts and the user's own statement.
 - Do not mechanically list fields, labels, dates, unit prices, counts, breakdowns, or secondary identifiers.
 - Optional confirmed context may be used only when it makes the explanation materially clearer. It is never mandatory.
 - Do not write a subject, greeting, closing, sign-off, sender signature, bullets, headings, or labels.
 - Do not mention that an AI, OCR, document, or analysis was used.
 - Keep the message polite, human, and suitable to send without editing.
-- When writing in Japanese, use natural Japanese business-email prose in consistent desu/masu style. Use complete sentences ending naturally with forms such as です, ます, ました, ません, or お願いいたします.
+- When writing in Japanese, use natural Japanese business-email prose in consistent desu/masu style. Rewrite sourceText itself into polite Japanese; do not copy blunt plain-form endings. Use complete sentences ending naturally with forms such as です, ます, ました, ません, or お願いいたします.
 - In Japanese, do not use clipped report-like fragments such as 「請求されていた。」 when natural customer wording such as 「請求されていました。」 is appropriate.
 - In Japanese, add natural particles and spacing around inserted identifiers. For example, write 「Folio番号76941で宿泊したTaito Sugiuraです。」 rather than mechanically joining an English label and number.
 - Preserve the user's reported background, including staff conversations, when it appears in userOriginalText or currentDraft. Do not omit it merely to shorten the message.`
@@ -481,7 +503,7 @@ STRICT CONTENT RULES
         lastReason=checked.reason
         console.warn('Structured draft validation failed',{attempt,reason:lastReason})
       }
-      const safeParts=safeStructuredParts(data,languageCode,slots)
+      const safeParts=safeStructuredParts(data,languageCode,slots,sourceText)
       const safe=composeStructuredMail({...safeParts,slots},data,languageCode)
       const checked=validateProtectedDraft(safe,data,'structured-safe-template')
       if(!checked.ok)throw new Error(`Safe template validation failed: ${checked.reason}`)
