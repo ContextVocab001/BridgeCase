@@ -4,7 +4,24 @@ const names={en:'English',ja:'Japanese',es:'Spanish','zh-CN':'Simplified Chinese
 const str=x=>typeof x==='string'?x.trim():''
 const arr=x=>Array.isArray(x)?x.map(str).filter(Boolean):[]
 function parse(content){const raw=typeof content==='string'?content:Array.isArray(content)?content.map(x=>typeof x==='string'?x:x?.text||'').join('\n'):'';const text=raw.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/```(?:json)?/gi,'').trim();try{return JSON.parse(text)}catch{}const a=text.indexOf('{'),b=text.lastIndexOf('}');if(a>=0&&b>a)return JSON.parse(text.slice(a,b+1));throw new Error('Invalid AI JSON')}
-async function call(key,model,messages,max_tokens=3800,temperature=.1){const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}if(!r.ok)throw new Error(data?.error?.message||`Nebius ${r.status}`);if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.');return parse(data?.choices?.[0]?.message?.content)}
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
+function isTransientAiError(status,message){return status===429||status===502||status===503||status===504||/overload|overloaded|busy|capacity|temporar|rate limit/i.test(str(message))}
+async function call(key,model,messages,max_tokens=3800,temperature=.1){
+  let lastError=null
+  for(let attempt=1;attempt<=2;attempt++){
+    const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})})
+    const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}
+    const message=data?.error?.message||`Nebius ${r.status}`
+    if(!r.ok){
+      lastError=new Error(message)
+      if(attempt===1&&isTransientAiError(r.status,message)){console.warn('Transient AI error; retrying once',{status:r.status,message});await sleep(1200);continue}
+      throw lastError
+    }
+    if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.')
+    return parse(data?.choices?.[0]?.message?.content)
+  }
+  throw lastError||new Error('AI service request failed.')
+}
 function search(label){return `https://www.google.com/search?q=${encodeURIComponent(`${label} official website contact`)}`}
 function urlsIn(text){return new Set((str(text).match(/https?:\/\/[^\s<>"')\]]+/gi)||[]).map(x=>x.replace(/[.,;:!?]+$/,'')))}
 function isUnrelatedIntermediary(label){return /(?:clover|stripe|square|adyen|braintree|worldpay|fiserv|first data|toast|lightspeed|shopify payments|visa|mastercard|american express|amex|discover|card issuer|payment processor|payment gateway|pos support|決済代行|決済処理|カード会社|カードブランド|銀行|pos事業者|posサポート)/i.test(str(label))}
@@ -219,8 +236,7 @@ function protectedDraftData(review){
   const statements=arr(review?.userStatements)
   const requested=review?.requestedOutcome&&typeof review.requestedOutcome==='object'?{code:str(review.requestedOutcome.code),statement:str(review.requestedOutcome.statement),amount:Number.isFinite(Number(review.requestedOutcome.amount))?Number(review.requestedOutcome.amount):undefined,currency:str(review.requestedOutcome.currency).toUpperCase()}:{code:'OTHER',statement:''}
   const primary=review?.primaryIdentifier&&typeof review.primaryIdentifier==='object'?{type:str(review.primaryIdentifier.type),label:str(review.primaryIdentifier.label),value:str(review.primaryIdentifier.value)}:null
-  const explanation=review?.userExplanation&&typeof review.userExplanation==='object'?{event:str(review.userExplanation.event),reason:str(review.userExplanation.reason).replace(/[。.!?]+$/,''),reasonProvided:Boolean(review.userExplanation.reasonProvided)}:{event:statements.join('。'),reason:'',reasonProvided:false}
-  return{caseType:str(review?.caseType)||'other',facts,statements,requested,primary,explanation}
+  return{caseType:str(review?.caseType)||'other',facts,statements,requested,primary}
 }
 function expectedMoney(data){
   const records=[]
@@ -321,7 +337,7 @@ function paragraphSlots(data){
   const identifier=data.primary?.value||''
   const identifierLabel=data.primary?.label||'Reference number'
   const identity={GUEST_NAME:guest,PRIMARY_IDENTIFIER_LABEL:identifierLabel,PRIMARY_IDENTIFIER:identifier}
-  const issue={USER_REASON:data.explanation?.reason||''}
+  const issue={}
   if(Number.isFinite(data.requested?.amount)&&data.requested.currency)issue.REFUND_AMOUNT=`${data.requested.currency} ${Number(data.requested.amount).toFixed(2)}`
   return{identity,issue}
 }
@@ -344,20 +360,19 @@ function composeStructuredMail(parts,data,language){
 }
 function safeStructuredParts(data,language,slots){
   const label=slots.identity.PRIMARY_IDENTIFIER_LABEL
-  const statements=data.explanation?.event||data.statements.join(language==='ja'?'。':'. ')
-  const reason=data.explanation?.reason||''
+  const statements=data.statements.join(language==='ja'?'。':'. ')
   const request=data.requested.statement
   if(language==='ja')return{
     identityParagraph:`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。`,
-    issueRequestParagraph:`${statements}${statements&& !/[。.!?]$/.test(statements)?'。':''}${reason?` ${'{{USER_REASON}}'}ため、この請求に問題があると考えています。`:''}${slots.issue.REFUND_AMOUNT?' この請求として計上された{{REFUND_AMOUNT}}について、返金をお願いいたします。':` ${request}`}`
+    issueRequestParagraph:`${statements}${statements&& !/[。.!?]$/.test(statements)?'。':''}${slots.issue.REFUND_AMOUNT?' この料金として請求された{{REFUND_AMOUNT}}について、返金をお願いいたします。':` ${request}`}`
   }
   if(language==='es')return{
     identityParagraph:`Soy {{GUEST_NAME}} y mi {{PRIMARY_IDENTIFIER_LABEL}} es {{PRIMARY_IDENTIFIER}}.`,
-    issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${reason?' {{USER_REASON}}.':''}${slots.issue.REFUND_AMOUNT?' Solicito el reembolso de {{REFUND_AMOUNT}}.':` ${request}`}`
+    issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${slots.issue.REFUND_AMOUNT?' Solicito el reembolso de {{REFUND_AMOUNT}}.':` ${request}`}`
   }
   return{
     identityParagraph:`My name is {{GUEST_NAME}}, and my {{PRIMARY_IDENTIFIER_LABEL}} is {{PRIMARY_IDENTIFIER}}.`,
-    issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${reason?' {{USER_REASON}}.':''}${slots.issue.REFUND_AMOUNT?' I am requesting a refund of {{REFUND_AMOUNT}}.':` ${request}`}`
+    issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${slots.issue.REFUND_AMOUNT?' I am requesting a refund of {{REFUND_AMOUNT}}.':` ${request}`}`
   }
 }
 function mailEnvelope(language){
@@ -401,13 +416,11 @@ export default async function handler(req,res){
     if(i.mode==='generate-protected-draft'){
       const data=protectedDraftData(i.review)
       if(!data.facts.length||!data.statements.length||!data.requested.statement){res.status(400).json({error:'Confirmed case data is incomplete.'});return}
-      if(!data.explanation?.reasonProvided||!data.explanation.reason){res.status(422).json({error:languageCode==='ja'?'返金を希望する理由が不足しています。例：駐車場を利用していない、すでに支払っている、案内された金額と異なる、などを自分の言葉で入力してください。':languageCode==='es'?'Falta el motivo de la solicitud. Explique con sus propias palabras por qué el cargo es incorrecto.':'The reason for the request is missing. Explain in your own words why the charge is incorrect.'});return}
       const slots=paragraphSlots(data)
       if(!slots.identity.GUEST_NAME||!slots.identity.PRIMARY_IDENTIFIER){res.status(422).json({error:'Guest name and a reservation-identifying number are required before drafting.'});return}
       const mailMeaning={
         caseType:data.caseType,
-        userEvent:data.explanation.event,
-        userReason:data.explanation.reason,
+        userStatements:data.statements,
         requestedOutcome:{code:data.requested.code,statement:data.requested.statement},
         optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier','chargeSummary'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
         requiredIdentityPlaceholders:Object.keys(slots.identity),
@@ -417,7 +430,7 @@ export default async function handler(req,res){
 
 ROLE OF EACH PARAGRAPH
 1. identityParagraph: one concise sentence identifying the customer and the booking/transaction.
-2. issueRequestParagraph: two or three natural sentences explaining what happened, the user's explicit reason why the charge is disputed, and the requested resolution.
+2. issueRequestParagraph: two or three natural sentences explaining the user's issue and requested resolution.
 
 IMMUTABLE PLACEHOLDERS
 - identityParagraph must contain each placeholder in requiredIdentityPlaceholders exactly once.
@@ -426,8 +439,6 @@ IMMUTABLE PLACEHOLDERS
 
 STRICT CONTENT RULES
 - Use only MAIL_MEANING. Do not infer, strengthen, calculate, or add facts.
-- USER_REASON represents only the reason explicitly supplied by the user. Use {{USER_REASON}} exactly once and never replace it with a guessed reason.
-- A conversation with staff, a promise, or an assurance may appear only if it is explicitly present in userEvent or userReason.
 - Preserve the difference between confirmed document facts and the user's own statement.
 - Do not mechanically list fields, labels, dates, unit prices, counts, breakdowns, or secondary identifiers.
 - Optional confirmed context may be used only when it makes the explanation materially clearer. It is never mandatory.
@@ -464,15 +475,11 @@ STRICT CONTENT RULES
       if(!userText){res.status(400).json({error:'User explanation is required.'});return}
       const structureSystem=`You structure only the user's own explanation. Return JSON only.
 OUTPUT SHAPE:
-{"sourceLanguage":"","claims":[{"code":"ISSUE_EVENT","statement":"","sourceQuote":""}],"requestedAction":{"code":"REFUND|EXPLANATION|CORRECTION|CANCELLATION|REPLACEMENT|OTHER","statement":""},"tone":"polite-neutral"}
+{"sourceLanguage":"","claims":[{"code":"","statement":"","sourceQuote":""}],"requestedAction":{"code":"REFUND|EXPLANATION|CORRECTION|CANCELLATION|REPLACEMENT|OTHER","statement":""},"tone":"polite-neutral"}
 RULES:
 - Use only USER_TEXT. Do not use documents, OCR text, merchant data, prior cases, or general knowledge.
 - Preserve the user's meaning, negation, uncertainty, and requested action.
 - Each claim must be something the user explicitly stated. sourceQuote must be a short exact quote from USER_TEXT.
-- ISSUE_EVENT states what happened, such as a charge appearing.
-- ISSUE_REASON states why the user believes the charge or outcome is wrong, such as not using the service, already paying, canceling, or receiving a different quoted price.
-- Do not create ISSUE_REASON merely because a refund was requested. If USER_TEXT gives no explicit reason, return no ISSUE_REASON claim.
-- ISSUE_REASON.statement must be a concise, polite clause in the interface language without final punctuation. Preserve negation and uncertainty.
 - statement and requestedAction.statement must be written in ${ui}.
 - Keep claims concise and non-duplicative.
 - Do not calculate amounts, dates, quantities, nights, days, taxes, or totals.
@@ -484,7 +491,7 @@ RULES:
       const structured=await call(key,model,[{role:'system',content:structureSystem},{role:'user',content:`USER_TEXT:
 ${userText}`}],1400,0)
       const allowedActions=new Set(['REFUND','EXPLANATION','CORRECTION','CANCELLATION','REPLACEMENT','OTHER'])
-      const claims=Array.isArray(structured?.claims)?structured.claims.map(x=>({code:['ISSUE_EVENT','ISSUE_REASON'].includes(str(x?.code).toUpperCase())?str(x?.code).toUpperCase():'ISSUE_EVENT',statement:str(x?.statement),sourceQuote:str(x?.sourceQuote),source:'user'})).filter(x=>x.statement&&x.sourceQuote&&userText.includes(x.sourceQuote)).slice(0,12):[]
+      const claims=Array.isArray(structured?.claims)?structured.claims.map(x=>({code:str(x?.code).toUpperCase().replace(/[^A-Z0-9_]/g,'_')||'USER_STATEMENT',statement:str(x?.statement),sourceQuote:str(x?.sourceQuote),source:'user'})).filter(x=>x.statement&&x.sourceQuote&&userText.includes(x.sourceQuote)).slice(0,12):[]
       const actionCode=str(structured?.requestedAction?.code).toUpperCase()
       const requestedAction={code:allowedActions.has(actionCode)?actionCode:'OTHER',statement:str(structured?.requestedAction?.statement)}
       if(!claims.length||!requestedAction.statement){throw new Error('AI could not structure the user explanation. Please try again.')}

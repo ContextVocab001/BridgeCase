@@ -266,12 +266,24 @@ function App() {
         setDraftBody(result.draft.body)
       }
       setShowModal(false); go('review')
-    } catch (error) { setAnalysisError(error instanceof Error ? error.message : 'Analysis failed.') } finally { setIsAnalyzing(false) }
+    } catch (error) { setAnalysisError(friendlyError(error, 'Analysis failed.')) } finally { setIsAnalyzing(false) }
   }
+  const friendlyError = (error: unknown, fallback: string) => {
+    const message = error instanceof Error ? error.message : fallback
+    if (/overload|overloaded|busy|capacity|temporar|rate limit|Nebius 429|Nebius 502|Nebius 503|Nebius 504/i.test(message)) {
+      return ui({
+        en:'AI processing is currently busy. Please wait a moment and try again. Your inputs and uploaded files have been kept.',
+        ja:'現在AI処理が混み合っています。少し待ってから、もう一度お試しください。入力内容とアップロード済み資料は保持されています。',
+        es:'El procesamiento de IA está ocupado. Espere un momento y vuelva a intentarlo. Sus datos y archivos se conservaron.'
+      })
+    }
+    return message
+  }
+
   const translateDraft = async () => {
     setIsAnalyzing(true); setAnalysisError('')
     try { const result = await translateApprovedDraft({ originalMessage:'', userRequest:'', interfaceLanguage:language, recipientLanguage, documents:[], approvedSubject:draftSubject, approvedBody:draftBody }); setTranslated(result); setTranslationApproved(false); go('translation') }
-    catch(error){ setAnalysisError(error instanceof Error ? error.message : 'Translation failed.') } finally { setIsAnalyzing(false) }
+    catch(error){ setAnalysisError(friendlyError(error, 'Translation failed.')) } finally { setIsAnalyzing(false) }
   }
   const changeLanguage = (lang: Lang) => {
     if (lang !== language) invalidateGeneratedResults()
@@ -405,7 +417,7 @@ function App() {
         <section className="review-card"><h2>{ui({en:'Confirmed from the source',ja:'資料から確認できた内容',es:'Confirmado en la fuente'})}</h2><div className="facts">{structuredReview.confirmedFacts.map((fact)=><label key={fact.key}><span>{fact.label}</span><b>{formatStructuredFact(fact)}</b></label>)}</div></section>
         <section className="review-card"><h2>{ui({en:'What you explained',ja:'あなたが説明した内容',es:'Lo que explicaste'})}</h2><ul className="statement-list">{structuredReview.userStatements.map((statement,index)=><li key={`${statement}-${index}`}>{statement}</li>)}</ul></section>
         <section className="review-card outcome"><h2>{ui({en:'Requested outcome',ja:'希望する対応',es:'Resultado solicitado'})}</h2><strong>{structuredReview.requestedOutcome.statement}</strong>{structuredReview.requestedOutcome.amount!==undefined&&<p>{ui({en:'Program-confirmed disputed amount',ja:'プログラムで確認した対象金額',es:'Importe confirmado por el programa'})}: {structuredReview.requestedOutcome.currency || ''} {structuredReview.requestedOutcome.amount.toFixed(2)}</p>}</section>
-        <section className={`review-card readiness ${structuredReview.readiness.ready?'ready':'blocked'}`}><h2>{ui({en:'Readiness',ja:'送信準備状況',es:'Estado de preparación'})}</h2><div className="readiness-checks"><span>{structuredReview.readiness.hasOrganization?'✓':'○'} {readinessLabels.target}</span><span>{structuredReview.readiness.hasPrimaryIdentifier?'✓':'○'} {readinessLabels.transaction}</span><span>{structuredReview.readiness.hasIssue?'✓':'○'} {readinessLabels.issue}</span><span>{structuredReview.readiness.hasOutcome?'✓':'○'} {readinessLabels.request}</span></div></section>
+        <section className={`review-card readiness ${structuredReview.readiness.ready?'ready':'blocked'}`}><h2>{ui({en:'Readiness',ja:'送信準備状況',es:'Estado de preparación'})}</h2><div className="readiness-checks"><span>{structuredReview.confirmedFacts.some(fact=>fact.key==='guestName')?'✓':'○'} {ui({en:'Guest identity',ja:'宿泊者情報',es:'Identidad del huésped'})}</span><span>{structuredReview.readiness.hasPrimaryIdentifier?'✓':'○'} {readinessLabels.transaction}</span><span>{structuredReview.readiness.hasIssue?'✓':'○'} {readinessLabels.issue}</span><span>{structuredReview.readiness.hasOutcome?'✓':'○'} {readinessLabels.request}</span></div></section>
         <section className="review-card"><h2>{ui({en:'Information that helps identify the case',ja:'相手が案件を特定するための情報',es:'Información para identificar el caso'})}</h2><div className="facts">{structuredReview.primaryIdentifier?<label><span>{structuredReview.primaryIdentifier.label}</span><b>{structuredReview.primaryIdentifier.value}</b></label>:<p>{ui({en:'No primary identifier was confirmed from the source.',ja:'資料から主要な識別番号を確認できませんでした。',es:'No se confirmó un identificador principal en la fuente.'})}</p>}</div></section>
       </> : <>
         <section className="review-card"><h2>{ui({en:'Confirmed from the information provided',ja:'入力・資料から確認できた内容',es:'Confirmado a partir de la información proporcionada'})}</h2><div className="facts">{analysis.confirmedFacts.map((fact,index)=><label key={`${fact.label}-${index}`}><span>{fact.label}</span><b>{fact.value}</b></label>)}</div></section>

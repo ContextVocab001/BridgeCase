@@ -61,7 +61,7 @@ export type PrepareCaseInput = {
   userText: string
   documentText: string
 }
-export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier' | 'generate-protected-draft'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string>; review?: CaseReviewData & { userExplanation?: { event:string; reason:string; reasonProvided:boolean } } }
+export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier' | 'generate-protected-draft'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string>; review?: CaseReviewData }
 
 async function readJson(response: Response) {
   const raw = await response.text()
@@ -79,7 +79,7 @@ async function post(input: AnalyzeCaseInput) {
   return payload
 }
 export async function analyzeCase(input: AnalyzeCaseInput): Promise<CaseAnalysis> { return post({...input,mode:'analyze'}) }
-export async function generateProtectedDraft(input: { interfaceLanguage: LanguageCode; review: CaseReviewData & { userExplanation?: { event:string; reason:string; reasonProvided:boolean } } }): Promise<{subject:string;body:string;generationMode:'ai'|'safe-template';validationAttempts:number}> { return post({mode:'generate-protected-draft',interfaceLanguage:input.interfaceLanguage,recipientLanguage:input.interfaceLanguage,review:input.review,originalMessage:'',userRequest:'',documents:[]}) }
+export async function generateProtectedDraft(input: { interfaceLanguage: LanguageCode; review: CaseReviewData }): Promise<{subject:string;body:string;generationMode:'ai'|'safe-template';validationAttempts:number}> { return post({mode:'generate-protected-draft',interfaceLanguage:input.interfaceLanguage,recipientLanguage:input.interfaceLanguage,review:input.review,originalMessage:'',userRequest:'',documents:[]}) }
 export async function structureUserInput(input: StructureUserInputInput): Promise<UserInputStructure> { return post({...input,mode:'structure-user-input',originalMessage:'',userRequest:input.userText,recipientLanguage:input.draftLanguage,documents:[]}) }
 export async function selectChargeLabel(input: SelectChargeLabelInput): Promise<ChargeLabelSelection> { return post({...input,mode:'select-charge-label',originalMessage:'',userRequest:input.userStructure.originalText,recipientLanguage:input.interfaceLanguage,documents:[]}) }
 export async function aggregateSelectedCharge(input: AggregateSelectedChargeInput): Promise<ChargeAggregation> { return post({...input,mode:'aggregate-selected-charge',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
@@ -98,7 +98,6 @@ export async function prepareStructuredCase(input: PrepareCaseInput): Promise<Ca
 
 export function buildCaseReviewData(preparation: CasePreparation): CaseReviewData {
   const confirmedFacts: CaseReviewData['confirmedFacts'] = []
-  // Preserve the document-confirmed guest name for the protected email-draft layer.
   if (preparation.caseContext.guestName) confirmedFacts.push({ key:'guestName', label:'Guest name', value:preparation.caseContext.guestName, source:'document' })
   if (preparation.caseContext.organizationName) confirmedFacts.push({ key:'organization', label:'Organization', value:preparation.caseContext.organizationName, source:'document' })
   if (preparation.caseContext.startDate) confirmedFacts.push({ key:'startDate', label:'Start date', value:preparation.caseContext.startDate, source:'document' })
@@ -110,18 +109,14 @@ export function buildCaseReviewData(preparation: CasePreparation): CaseReviewDat
   }
   const primary = preparation.identifierSelection.primaryIdentifier
   if (primary) confirmedFacts.push({ key:'primaryIdentifier', label:primary.label, value:primary.value, source:'document' })
-  const reasonClaims = preparation.userStructure.claims.filter(claim=>claim.code === 'ISSUE_REASON')
-  const eventClaims = preparation.userStructure.claims.filter(claim=>claim.code !== 'ISSUE_REASON')
-  const review = {
+  return {
     caseType:preparation.caseClassification.caseType,
     confirmedFacts,
     userStatements:preparation.userStructure.claims.map(claim=>claim.statement),
-    userExplanation:{ event:eventClaims.map(claim=>claim.statement).join('。'), reason:reasonClaims.map(claim=>claim.statement).join('。'), reasonProvided:reasonClaims.length>0 },
     requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.totalAmount, currency:aggregation?.currencyCode },
     primaryIdentifier:primary,
-    readiness:{ ready:Boolean(preparation.caseContext.organizationName&&preparation.userStructure.requestedAction.statement&&reasonClaims.length), hasOrganization:Boolean(preparation.caseContext.organizationName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
+    readiness:{ ready:Boolean(preparation.caseContext.guestName&&primary&&(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length)&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.guestName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
   }
-  return review as CaseReviewData & { userExplanation: { event:string; reason:string; reasonProvided:boolean } }
 }
 export async function translateApprovedDraft(input: AnalyzeCaseInput): Promise<{subject:string;body:string}> { return post({...input,mode:'translate'}) }
 export async function runOcr(images:string[]):Promise<OcrResult> {
