@@ -206,7 +206,7 @@ function App() {
     if (candidate.purpose === 'source-page') return ui({en:'Website printed in the source',ja:'資料に記載されたWebページ',es:'Página indicada en el documento'})
     return candidate.label
   }
-  const contactCandidateReason = (candidate: { purpose?: string; searchEntity?: string; locationName?: string }) => {
+  const contactCandidateReason = (candidate: { label: string; purpose?: string; searchEntity?: string; locationName?: string }) => {
     const target = [candidate.searchEntity, candidate.locationName].filter(Boolean).join(' / ')
     if (candidate.purpose === 'case-contact') return ui({en:`Searches for the most relevant official form or email route for this case. Target: ${target}`,ja:`今回の請求・返金に近い公式フォームまたはメール窓口を探します。対象：${target}`,es:`Busca el formulario o correo oficial más relacionado con este caso. Objetivo: ${target}`})
     if (candidate.purpose === 'location-page') return ui({en:`Use the official location page to confirm you selected the correct branch or property. Target: ${target}`,ja:`個別の施設・営業所ページで、利用した場所と一致するか確認できます。対象：${target}`,es:`Utiliza la página oficial de la ubicación para confirmar la sucursal correcta. Objetivo: ${target}`})
