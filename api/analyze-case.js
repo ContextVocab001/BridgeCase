@@ -4,24 +4,7 @@ const names={en:'English',ja:'Japanese',es:'Spanish','zh-CN':'Simplified Chinese
 const str=x=>typeof x==='string'?x.trim():''
 const arr=x=>Array.isArray(x)?x.map(str).filter(Boolean):[]
 function parse(content){const raw=typeof content==='string'?content:Array.isArray(content)?content.map(x=>typeof x==='string'?x:x?.text||'').join('\n'):'';const text=raw.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/```(?:json)?/gi,'').trim();try{return JSON.parse(text)}catch{}const a=text.indexOf('{'),b=text.lastIndexOf('}');if(a>=0&&b>a)return JSON.parse(text.slice(a,b+1));throw new Error('Invalid AI JSON')}
-const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
-function isTransientAiError(status,message){return status===429||status===502||status===503||status===504||/overload|overloaded|busy|capacity|temporar|rate limit/i.test(str(message))}
-async function call(key,model,messages,max_tokens=3800,temperature=.1){
-  let lastError=null
-  for(let attempt=1;attempt<=2;attempt++){
-    const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})})
-    const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}
-    const message=data?.error?.message||`Nebius ${r.status}`
-    if(!r.ok){
-      lastError=new Error(message)
-      if(attempt===1&&isTransientAiError(r.status,message)){console.warn('Transient AI error; retrying once',{status:r.status,message});await sleep(1200);continue}
-      throw lastError
-    }
-    if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.')
-    return parse(data?.choices?.[0]?.message?.content)
-  }
-  throw lastError||new Error('AI service request failed.')
-}
+async function call(key,model,messages,max_tokens=3800,temperature=.1){const r=await fetch(URL,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature,max_tokens,response_format:{type:'json_object'},chat_template_kwargs:{enable_thinking:false},stream:false})});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=null}if(!r.ok)throw new Error(data?.error?.message||`Nebius ${r.status}`);if(data?.choices?.[0]?.finish_reason==='length')throw new Error('AI response was cut off.');return parse(data?.choices?.[0]?.message?.content)}
 function search(label){return `https://www.google.com/search?q=${encodeURIComponent(`${label} official website contact`)}`}
 function urlsIn(text){return new Set((str(text).match(/https?:\/\/[^\s<>"')\]]+/gi)||[]).map(x=>x.replace(/[.,;:!?]+$/,'')))}
 function isUnrelatedIntermediary(label){return /(?:clover|stripe|square|adyen|braintree|worldpay|fiserv|first data|toast|lightspeed|shopify payments|visa|mastercard|american express|amex|discover|card issuer|payment processor|payment gateway|pos support|決済代行|決済処理|カード会社|カードブランド|銀行|pos事業者|posサポート)/i.test(str(label))}
@@ -236,7 +219,7 @@ function protectedDraftData(review){
   const statements=arr(review?.userStatements)
   const requested=review?.requestedOutcome&&typeof review.requestedOutcome==='object'?{code:str(review.requestedOutcome.code),statement:str(review.requestedOutcome.statement),amount:Number.isFinite(Number(review.requestedOutcome.amount))?Number(review.requestedOutcome.amount):undefined,currency:str(review.requestedOutcome.currency).toUpperCase()}:{code:'OTHER',statement:''}
   const primary=review?.primaryIdentifier&&typeof review.primaryIdentifier==='object'?{type:str(review.primaryIdentifier.type),label:str(review.primaryIdentifier.label),value:str(review.primaryIdentifier.value)}:null
-  return{caseType:str(review?.caseType)||'other',facts,statements,requested,primary}
+  return{caseType:str(review?.caseType)||'other',facts,statements,requested,primary,userOriginalText:str(review?.userOriginalText)}
 }
 function expectedMoney(data){
   const records=[]
@@ -336,7 +319,9 @@ function paragraphSlots(data){
   const guest=data.facts.find(x=>x.key==='guestName')?.value||''
   const identifier=data.primary?.value||''
   const identifierLabel=data.primary?.label||'Reference number'
-  const identity={GUEST_NAME:guest,PRIMARY_IDENTIFIER_LABEL:identifierLabel,PRIMARY_IDENTIFIER:identifier}
+  const identity={}
+  if(guest)identity.GUEST_NAME=guest
+  if(identifier){identity.PRIMARY_IDENTIFIER_LABEL=identifierLabel;identity.PRIMARY_IDENTIFIER=identifier}
   const issue={}
   if(Number.isFinite(data.requested?.amount)&&data.requested.currency)issue.REFUND_AMOUNT=`${data.requested.currency} ${Number(data.requested.amount).toFixed(2)}`
   return{identity,issue}
@@ -363,15 +348,15 @@ function safeStructuredParts(data,language,slots){
   const statements=data.statements.join(language==='ja'?'。':'. ')
   const request=data.requested.statement
   if(language==='ja')return{
-    identityParagraph:`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。`,
+    identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。`:slots.identity.GUEST_NAME?`{{GUEST_NAME}}です。`:slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の件でお問い合わせします。`:`今回の請求についてお問い合わせします。`,
     issueRequestParagraph:`${statements}${statements&& !/[。.!?]$/.test(statements)?'。':''}${slots.issue.REFUND_AMOUNT?' この料金として請求された{{REFUND_AMOUNT}}について、返金をお願いいたします。':` ${request}`}`
   }
   if(language==='es')return{
-    identityParagraph:`Soy {{GUEST_NAME}} y mi {{PRIMARY_IDENTIFIER_LABEL}} es {{PRIMARY_IDENTIFIER}}.`,
+    identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`Soy {{GUEST_NAME}} y mi {{PRIMARY_IDENTIFIER_LABEL}} es {{PRIMARY_IDENTIFIER}}.`:slots.identity.GUEST_NAME?`Soy {{GUEST_NAME}}.`:slots.identity.PRIMARY_IDENTIFIER?`Me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.`:`Me comunico sobre este cargo.`,
     issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${slots.issue.REFUND_AMOUNT?' Solicito el reembolso de {{REFUND_AMOUNT}}.':` ${request}`}`
   }
   return{
-    identityParagraph:`My name is {{GUEST_NAME}}, and my {{PRIMARY_IDENTIFIER_LABEL}} is {{PRIMARY_IDENTIFIER}}.`,
+    identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`My name is {{GUEST_NAME}}, and my {{PRIMARY_IDENTIFIER_LABEL}} is {{PRIMARY_IDENTIFIER}}.`:slots.identity.GUEST_NAME?`My name is {{GUEST_NAME}}.`:slots.identity.PRIMARY_IDENTIFIER?`I am contacting you about {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.`:`I am contacting you about this charge.`,
     issueRequestParagraph:`${statements}${statements&& !/[.!?]$/.test(statements)?'.':''}${slots.issue.REFUND_AMOUNT?' I am requesting a refund of {{REFUND_AMOUNT}}.':` ${request}`}`
   }
 }
@@ -417,10 +402,12 @@ export default async function handler(req,res){
       const data=protectedDraftData(i.review)
       if(!data.facts.length||!data.statements.length||!data.requested.statement){res.status(400).json({error:'Confirmed case data is incomplete.'});return}
       const slots=paragraphSlots(data)
-      if(!slots.identity.GUEST_NAME||!slots.identity.PRIMARY_IDENTIFIER){res.status(422).json({error:'Guest name and a reservation-identifying number are required before drafting.'});return}
       const mailMeaning={
         caseType:data.caseType,
-        userStatements:data.statements,
+        userOriginalText:data.userOriginalText,
+        structuredUserStatements:data.statements,
+        additionalExplanation:str(i.additionalExplanation),
+        currentDraft:str(i.currentBody)?{subject:str(i.currentSubject),body:str(i.currentBody)}:null,
         requestedOutcome:{code:data.requested.code,statement:data.requested.statement},
         optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier','chargeSummary'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
         requiredIdentityPlaceholders:Object.keys(slots.identity),
@@ -439,6 +426,10 @@ IMMUTABLE PLACEHOLDERS
 
 STRICT CONTENT RULES
 - Use only MAIL_MEANING. Do not infer, strengthen, calculate, or add facts.
+- userOriginalText is the primary source for the user's issue, reason, background, negation, and requested action. Preserve every material meaning instead of summarizing it down to one point.
+- additionalExplanation contains optional text entered on the draft screen. Integrate all material details naturally without inventing anything.
+- If currentDraft is present, improve that draft rather than replacing the user's meaning. Preserve the user's manual edits unless they conflict with protected confirmed values.
+- The user may describe a staff conversation. Keep it as the user's reported experience and do not strengthen it into a verified promise or admission.
 - Preserve the difference between confirmed document facts and the user's own statement.
 - Do not mechanically list fields, labels, dates, unit prices, counts, breakdowns, or secondary identifiers.
 - Optional confirmed context may be used only when it makes the explanation materially clearer. It is never mandatory.

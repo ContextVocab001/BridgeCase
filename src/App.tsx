@@ -182,6 +182,8 @@ function App() {
   const [additional, setAdditional] = useState<Record<string,string>>({})
   const [draftSubject, setDraftSubject] = useState('')
   const [draftBody, setDraftBody] = useState('')
+  const [draftAdditional, setDraftAdditional] = useState('')
+  const [isRefiningDraft, setIsRefiningDraft] = useState(false)
   const [translated, setTranslated] = useState({ subject: '', body: '' })
   const [translationApproved, setTranslationApproved] = useState(false)
   const messageInputRef = useRef<HTMLInputElement>(null)
@@ -204,6 +206,7 @@ function App() {
     setAdditional({})
     setDraftSubject('')
     setDraftBody('')
+    setDraftAdditional('')
     setTranslated({ subject: '', body: '' })
     setTranslationApproved(false)
     setAnalysisError('')
@@ -230,7 +233,7 @@ function App() {
   const hasRequest = request.trim().length > 0
   const canAnalyze = hasRequest
   const canCreateInquiry = structuredReview
-    ? structuredReview.readiness.ready
+    ? Boolean(structuredReview.readiness.hasIssue && structuredReview.readiness.hasOutcome)
     : Boolean(
       analysis?.readiness.targetIdentified &&
       analysis?.readiness.transactionIdentified &&
@@ -266,24 +269,22 @@ function App() {
         setDraftBody(result.draft.body)
       }
       setShowModal(false); go('review')
-    } catch (error) { setAnalysisError(friendlyError(error, 'Analysis failed.')) } finally { setIsAnalyzing(false) }
+    } catch (error) { setAnalysisError(error instanceof Error ? error.message : 'Analysis failed.') } finally { setIsAnalyzing(false) }
   }
-  const friendlyError = (error: unknown, fallback: string) => {
-    const message = error instanceof Error ? error.message : fallback
-    if (/overload|overloaded|busy|capacity|temporar|rate limit|Nebius 429|Nebius 502|Nebius 503|Nebius 504/i.test(message)) {
-      return ui({
-        en:'AI processing is currently busy. Please wait a moment and try again. Your inputs and uploaded files have been kept.',
-        ja:'現在AI処理が混み合っています。少し待ってから、もう一度お試しください。入力内容とアップロード済み資料は保持されています。',
-        es:'El procesamiento de IA está ocupado. Espere un momento y vuelva a intentarlo. Sus datos y archivos se conservaron.'
-      })
-    }
-    return message
+  const refineDraft = async () => {
+    if (!structuredReview) return
+    setIsRefiningDraft(true); setAnalysisError('')
+    try {
+      const result = await generateProtectedDraft({ interfaceLanguage:language, review:structuredReview, additionalExplanation:draftAdditional, currentSubject:draftSubject, currentBody:draftBody })
+      setDraftSubject(result.subject); setDraftBody(result.body); setTranslated({subject:'',body:''}); setTranslationApproved(false)
+    } catch (error) { setAnalysisError(error instanceof Error ? error.message : 'Draft refinement failed.') }
+    finally { setIsRefiningDraft(false) }
   }
 
   const translateDraft = async () => {
     setIsAnalyzing(true); setAnalysisError('')
     try { const result = await translateApprovedDraft({ originalMessage:'', userRequest:'', interfaceLanguage:language, recipientLanguage, documents:[], approvedSubject:draftSubject, approvedBody:draftBody }); setTranslated(result); setTranslationApproved(false); go('translation') }
-    catch(error){ setAnalysisError(friendlyError(error, 'Translation failed.')) } finally { setIsAnalyzing(false) }
+    catch(error){ setAnalysisError(error instanceof Error ? error.message : 'Translation failed.') } finally { setIsAnalyzing(false) }
   }
   const changeLanguage = (lang: Lang) => {
     if (lang !== language) invalidateGeneratedResults()
@@ -411,13 +412,18 @@ function App() {
     } catch { return fact.value }
   }
 
+  const draftMissingItems = structuredReview ? [
+    !structuredReview.confirmedFacts.some(fact=>fact.key==='guestName') ? ui({en:'Guest name',ja:'宿泊者名',es:'Nombre del huésped'}) : '',
+    !structuredReview.primaryIdentifier ? ui({en:'Reservation, confirmation, or folio number',ja:'予約番号・確認番号・Folio番号のいずれか',es:'Número de reserva, confirmación o folio'}) : ''
+  ].filter(Boolean) : []
+
   const review = analysis && (
     <main className="workflow-main">{progress(2)}<section className="workflow-heading"><p>{ui({en:'Step 2',ja:'ステップ2',es:'Paso 2'})}</p><h1>{ui({en:'Review your case',ja:'案件内容を確認',es:'Revisa tu caso'})}</h1><span>{ui({en:'Check the facts, your explanation, and the requested outcome before continuing.',ja:'資料から確認した事実、あなたの説明、希望する対応を確認してください。',es:'Comprueba los hechos, tu explicación y el resultado solicitado antes de continuar.'})}</span></section>
       {structuredReview ? <>
         <section className="review-card"><h2>{ui({en:'Confirmed from the source',ja:'資料から確認できた内容',es:'Confirmado en la fuente'})}</h2><div className="facts">{structuredReview.confirmedFacts.map((fact)=><label key={fact.key}><span>{fact.label}</span><b>{formatStructuredFact(fact)}</b></label>)}</div></section>
         <section className="review-card"><h2>{ui({en:'What you explained',ja:'あなたが説明した内容',es:'Lo que explicaste'})}</h2><ul className="statement-list">{structuredReview.userStatements.map((statement,index)=><li key={`${statement}-${index}`}>{statement}</li>)}</ul></section>
         <section className="review-card outcome"><h2>{ui({en:'Requested outcome',ja:'希望する対応',es:'Resultado solicitado'})}</h2><strong>{structuredReview.requestedOutcome.statement}</strong>{structuredReview.requestedOutcome.amount!==undefined&&<p>{ui({en:'Program-confirmed disputed amount',ja:'プログラムで確認した対象金額',es:'Importe confirmado por el programa'})}: {structuredReview.requestedOutcome.currency || ''} {structuredReview.requestedOutcome.amount.toFixed(2)}</p>}</section>
-        <section className={`review-card readiness ${structuredReview.readiness.ready?'ready':'blocked'}`}><h2>{ui({en:'Readiness',ja:'送信準備状況',es:'Estado de preparación'})}</h2><div className="readiness-checks"><span>{structuredReview.confirmedFacts.some(fact=>fact.key==='guestName')?'✓':'○'} {ui({en:'Guest identity',ja:'宿泊者情報',es:'Identidad del huésped'})}</span><span>{structuredReview.readiness.hasPrimaryIdentifier?'✓':'○'} {readinessLabels.transaction}</span><span>{structuredReview.readiness.hasIssue?'✓':'○'} {readinessLabels.issue}</span><span>{structuredReview.readiness.hasOutcome?'✓':'○'} {readinessLabels.request}</span></div></section>
+        <section className={`review-card readiness ${structuredReview.readiness.ready?'ready':'blocked'}`}><h2>{ui({en:'Readiness',ja:'送信準備状況',es:'Estado de preparación'})}</h2><div className="readiness-checks"><span>{structuredReview.readiness.hasOrganization?'✓':'○'} {readinessLabels.target}</span><span>{structuredReview.readiness.hasPrimaryIdentifier?'✓':'○'} {readinessLabels.transaction}</span><span>{structuredReview.readiness.hasIssue?'✓':'○'} {readinessLabels.issue}</span><span>{structuredReview.readiness.hasOutcome?'✓':'○'} {readinessLabels.request}</span></div></section>
         <section className="review-card"><h2>{ui({en:'Information that helps identify the case',ja:'相手が案件を特定するための情報',es:'Información para identificar el caso'})}</h2><div className="facts">{structuredReview.primaryIdentifier?<label><span>{structuredReview.primaryIdentifier.label}</span><b>{structuredReview.primaryIdentifier.value}</b></label>:<p>{ui({en:'No primary identifier was confirmed from the source.',ja:'資料から主要な識別番号を確認できませんでした。',es:'No se confirmó un identificador principal en la fuente.'})}</p>}</div></section>
       </> : <>
         <section className="review-card"><h2>{ui({en:'Confirmed from the information provided',ja:'入力・資料から確認できた内容',es:'Confirmado a partir de la información proporcionada'})}</h2><div className="facts">{analysis.confirmedFacts.map((fact,index)=><label key={`${fact.label}-${index}`}><span>{fact.label}</span><b>{fact.value}</b></label>)}</div></section>
@@ -428,7 +434,7 @@ function App() {
     </main>
   )
   const draft = (
-    <main className="workflow-main">{progress(3)}<section className="workflow-heading"><p>{t.draftLabel}</p><h1>{language==='ja'?'問い合わせ文を確認':t.draftTitle}</h1><span>{language==='ja'?'OCRで読み取った識別情報と請求内容を含めています。自由に修正してから翻訳してください。':t.draftHelp}</span></section><section className="draft-card"><label><span>{t.subject}</span><input value={draftSubject} onChange={e=>{setDraftSubject(e.target.value);setTranslated({subject:'',body:''});setTranslationApproved(false)}}/></label><label><span>{t.message}</span><textarea className="draft-area" value={draftBody} onChange={e=>{setDraftBody(e.target.value);setTranslated({subject:'',body:''});setTranslationApproved(false)}}/></label></section>{analysisError&&<div className="analysis-api-error">{analysisError}</div>}<div className="workflow-actions"><button onClick={()=>go('review')}>← {t.back}</button><button className="primary" disabled={isAnalyzing} onClick={translateDraft}>{isAnalyzing?(language==='ja'?'翻訳しています…':'Translating…'):(language==='ja'?'この内容を承認して翻訳':t.approveDraft)} →</button></div></main>
+    <main className="workflow-main">{progress(3)}<section className="workflow-heading"><p>{t.draftLabel}</p><h1>{language==='ja'?'問い合わせ文を確認':t.draftTitle}</h1><span>{language==='ja'?'OCRで読み取った識別情報と請求内容を含めています。自由に修正してから翻訳してください。':t.draftHelp}</span></section><section className={`review-card ${draftMissingItems.length?'readiness blocked':''}`}><h2>{ui({en:'Additional information',ja:'不足情報・追加したい内容',es:'Información adicional'})}</h2>{draftMissingItems.length>0?<><p>{ui({en:'The following information was not confirmed. Enter it below if available:',ja:'次の情報を確認できませんでした。分かる場合は下の欄に入力してください。',es:'No se pudo confirmar la siguiente información. Introdúzcala si la conoce:'})}</p><p><b>{draftMissingItems.join('。')}。</b></p></>:<p>{ui({en:'The required identifying information is available. Add any details you want reflected in the inquiry.',ja:'必要な識別情報は揃っています。メールに反映したい補足があれば入力してください。',es:'La información de identificación necesaria está disponible. Añada cualquier detalle que desee reflejar.'})}</p>}<textarea className="request-area" value={draftAdditional} onChange={e=>setDraftAdditional(e.target.value)} placeholder={ui({en:'Example: I did not use the parking lot. Please also include what the front desk told me.',ja:'例：駐車場は利用していません。フロントで説明された内容も入れてください。',es:'Ejemplo: No utilicé el estacionamiento. Incluya también lo que me indicó recepción.'})}/></section><section className="draft-card"><label><span>{t.subject}</span><input value={draftSubject} onChange={e=>{setDraftSubject(e.target.value);setTranslated({subject:'',body:''});setTranslationApproved(false)}}/></label><label><span>{t.message}</span><textarea className="draft-area" value={draftBody} onChange={e=>{setDraftBody(e.target.value);setTranslated({subject:'',body:''});setTranslationApproved(false)}}/></label></section>{analysisError&&<div className="analysis-api-error">{analysisError}</div>}<div className="workflow-actions"><button onClick={()=>go('review')}>← {t.back}</button><div style={{display:'flex',gap:'10px',flexWrap:'wrap',justifyContent:'flex-end'}}><button type="button" disabled={isRefiningDraft||isAnalyzing} onClick={refineDraft}>{isRefiningDraft?ui({en:'Refining…',ja:'整えています…',es:'Mejorando…'}):ui({en:'Refine with AI',ja:'AIで文面を整える',es:'Mejorar con IA'})}</button><button className="primary" disabled={isAnalyzing||isRefiningDraft} onClick={translateDraft}>{isAnalyzing?(language==='ja'?'翻訳しています…':'Translating…'):(language==='ja'?'この内容を承認して翻訳':t.approveDraft)} →</button></div></div></main>
   )
   const translation = (
     <main className="workflow-main">{progress(4)}{!translationApproved?<><section className="workflow-heading"><p>{t.translationLabel}</p><h1>{t.translationTitle}</h1><span>{language==='ja'?'右側は、承認した文章だけを忠実に翻訳したものです。新しい要求や事実は追加しません。':t.translationHelp}</span></section><section className="translation-grid"><article><header><span>Aa</span><b>{t.approvedVersion}</b></header><h2>{draftSubject}</h2><pre>{draftBody}</pre></article><article><header><span>⇄</span><b>{t.translatedVersion}</b></header><h2>{translated.subject}</h2><pre>{translated.body}</pre></article></section><div className="workflow-actions"><button onClick={()=>go('draft')}>← {t.backDraft}</button><button className="primary" onClick={()=>{setTranslationApproved(true);window.scrollTo(0,0)}}>{t.approveTranslation} →</button></div></>:<section className="complete contact-complete"><div className="complete-heading"><div className="complete-check">✓</div><div><h2>{language==='ja'?'問い合わせ文の準備ができました':'Your inquiry is ready'}</h2><p>{ui({en:'Confirm the official site yourself, then copy the inquiry or individual fields into an official form or email. Nothing is sent automatically.',ja:'公式サイトを確認し、問い合わせ文または必要な項目を公式フォームやメールへコピーしてください。自動送信はしません。',es:'Confirma el sitio oficial y copia la consulta o los campos necesarios en un formulario o correo oficial. Nada se envía automáticamente.'})}</p></div></div>{analysis?.messageSource.isNoReply&&<div className="no-reply-warning"><b>Do Not Reply</b><p>{language==='ja'?'元のメールアドレスは問い合わせ先候補から除外しました。':'The original address was excluded.'}</p></div>}<h3>{ui({en:'Official site and contact candidates',ja:'公式サイト・問い合わせ先候補',es:'Sitios y contactos oficiales candidatos'})}</h3><div className="contact-candidates">{analysis?.contactCandidates.map((candidate,index)=><article key={`${candidate.label}-${index}`}><div>{candidate.recommended&&<mark>{language==='ja'?'おすすめ':'Recommended'}</mark>}<b>{candidate.label}</b><p>{candidate.reason}</p>{candidate.kind==='search'&&<small>{ui({en:'Search results are not verified. Open the official site and confirm the company or property name and location.',ja:'検索結果は未確認です。公式サイトを開き、企業・施設名と所在地が一致することを確認してください。',es:'Los resultados no están verificados. Abre el sitio oficial y confirma el nombre y la ubicación.'})}</small>}</div><a href={candidate.url} target="_blank" rel="noreferrer">{contactActionLabel(candidate.kind)} ↗</a></article>)}</div><section className="final-message"><h3>{ui({en:'Completed inquiry',ja:'完成した問い合わせ文',es:'Consulta completada'})}</h3><label>{t.subject}</label><h2>{translated.subject}</h2><label>{t.message}</label><pre>{translated.body}</pre><div className="copy-actions final-copy-actions"><button className="copy-button secondary-copy" onClick={()=>copyText('subject',translated.subject)}>{copyStatus==='subject'?'✓':language==='ja'?'件名をコピー':'Copy subject'}</button><button className="copy-button secondary-copy" onClick={()=>copyText('message',translated.body)}>{copyStatus==='message'?'✓':language==='ja'?'本文をコピー':'Copy message'}</button><button className="primary copy-button main-copy" onClick={()=>copyText('all',`${translated.subject}\n\n${translated.body}`)}>{copyStatus==='all'?ui({en:'✓ Copied',ja:'✓ コピーしました',es:'✓ Copiado'}):ui({en:'Copy inquiry',ja:'問い合わせ文をコピー',es:'Copiar consulta'})}</button></div></section></section>}</main>
