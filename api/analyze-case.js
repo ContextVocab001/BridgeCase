@@ -231,31 +231,47 @@ function localizedFactLabel(fact,language){
   }
   return labels[language]?.[fact?.key]||str(fact?.label)||str(fact?.key)
 }
+function normalizeChargeAggregation(value){
+  if(!value||typeof value!=='object')return null
+  const currencyCode=str(value.currencyCode).toUpperCase()
+  const currencySymbol=str(value.currencySymbol)
+  const amountGroups=Array.isArray(value.amountGroups)?value.amountGroups.map(group=>({
+    unitAmount:Number(group?.unitAmount),
+    count:Number(group?.count),
+    subtotal:Number(group?.subtotal)
+  })).filter(group=>Number.isFinite(group.unitAmount)&&Number.isFinite(group.count)&&Number.isFinite(group.subtotal)):[]
+  const totalAmount=Number(value.totalAmount)
+  return{
+    selectedLabel:str(value.selectedLabel),currencyCode,currencySymbol,
+    lineCount:Number(value.lineCount)||0,
+    totalAmount:Number.isFinite(totalAmount)?totalAmount:undefined,
+    amountGroups,
+    evidenceLines:arr(value.evidenceLines)
+  }
+}
 function protectedDraftData(review){
-  const rawFacts=Array.isArray(review?.confirmedFacts)?review.confirmedFacts:[]
-  const chargeSummaries=rawFacts.filter(x=>str(x?.key)==='chargeSummary').map(x=>parseJsonObject(x?.value)).filter(Boolean)
-  const facts=rawFacts.map(x=>({key:str(x?.key),label:str(x?.label),value:safeFactValue(x),source:str(x?.source)})).filter(x=>x.label&&x.value)
+  const facts=Array.isArray(review?.confirmedFacts)?review.confirmedFacts.map(x=>({key:str(x?.key),label:str(x?.label),value:safeFactValue(x),source:str(x?.source)})).filter(x=>x.label&&x.value):[]
   const statements=arr(review?.userStatements)
   const requested=review?.requestedOutcome&&typeof review.requestedOutcome==='object'?{code:str(review.requestedOutcome.code),statement:str(review.requestedOutcome.statement),amount:Number.isFinite(Number(review.requestedOutcome.amount))?Number(review.requestedOutcome.amount):undefined,currency:str(review.requestedOutcome.currency).toUpperCase()}:{code:'OTHER',statement:''}
   const primary=review?.primaryIdentifier&&typeof review.primaryIdentifier==='object'?{type:str(review.primaryIdentifier.type),label:str(review.primaryIdentifier.label),value:str(review.primaryIdentifier.value)}:null
-  return{caseType:str(review?.caseType)||'other',facts,chargeSummaries,statements,requested,primary,userOriginalText:str(review?.userOriginalText)}
+  const chargeAggregation=normalizeChargeAggregation(review?.chargeAggregation)
+  return{caseType:str(review?.caseType)||'other',facts,statements,requested,primary,userOriginalText:str(review?.userOriginalText),chargeAggregation}
 }
 function expectedMoney(data){
   const records=[]
-  for(const fact of data.facts)records.push(...extractMoney(fact.value))
-  for(const summary of data.chargeSummaries||[]){
-    const currency=str(summary?.currencyCode).toUpperCase()||currencyCode(summary?.currencySymbol)
-    if(!currency)continue
-    const add=(amount,raw)=>{const value=Number(amount);if(Number.isFinite(value))records.push({currency,amount:Math.round(value*100)/100,raw})}
-    add(summary?.totalAmount,'chargeSummary.totalAmount')
-    for(const group of Array.isArray(summary?.amountGroups)?summary.amountGroups:[]){
-      add(group?.unitAmount,'chargeSummary.amountGroups.unitAmount')
-      add(group?.subtotal,'chargeSummary.amountGroups.subtotal')
-      const unit=Number(group?.unitAmount),count=Number(group?.count)
-      if(Number.isFinite(unit)&&Number.isFinite(count)&&count>0)add(unit*count,'chargeSummary.amountGroups.calculatedSubtotal')
+  const summary=data.chargeAggregation
+  if(summary){
+    const currency=summary.currencyCode||currencyCode(summary.currencySymbol)
+    const add=(amount,raw)=>{const value=Number(amount);if(currency&&Number.isFinite(value))records.push({currency,amount:Math.round(value*100)/100,raw})}
+    add(summary.totalAmount,'chargeAggregation.totalAmount')
+    for(const group of summary.amountGroups||[]){
+      add(group.unitAmount,'chargeAggregation.amountGroups.unitAmount')
+      add(group.subtotal,'chargeAggregation.amountGroups.subtotal')
+      if(Number.isFinite(group.unitAmount)&&Number.isFinite(group.count)&&group.count>0)add(group.unitAmount*group.count,'chargeAggregation.amountGroups.calculatedSubtotal')
     }
   }
-  if(Number.isFinite(data.requested?.amount)&&data.requested.currency)records.push({currency:data.requested.currency,amount:Number(data.requested.amount),raw:'requestedOutcome'})
+  // Legacy fallback only for cases created before chargeAggregation became part of CaseReviewData.
+  if(!records.length){for(const fact of data.facts)records.push(...extractMoney(fact.value))}
   return new Map(records.map(x=>[moneyKey(x),x]))
 }
 function expectedDates(data){return new Set(data.facts.flatMap(x=>extractDates(x.value)))}
@@ -509,7 +525,7 @@ export default async function handler(req,res){
         mode:isRefinement?'REFINE_CURRENT_DRAFT':'CREATE_FROM_USER_INPUT',
         sourceText,
         requestedOutcome:{code:data.requested.code,statement:data.requested.statement},
-        optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier','chargeSummary'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
+        optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
         requiredIdentityPlaceholders:Object.keys(slots.identity),
         requiredIssuePlaceholders:Object.keys(slots.issue)
       }

@@ -156,6 +156,8 @@ export type CaseReviewData = {
   caseType: CaseType
   confirmedFacts: CaseReviewFact[]
   userStatements: string[]
+  userOriginalText: string
+  chargeAggregation: ChargeAggregation | null
   requestedOutcome: {
     code: RequestedActionCode
     statement: string

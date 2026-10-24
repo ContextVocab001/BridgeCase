@@ -250,39 +250,25 @@ function App() {
       const [messageOcr, documentOcr] = await Promise.all([messageImages.length ? runOcr(messageImages) : Promise.resolve({ text: '', pages: [] }), documentImages.length ? runOcr(documentImages) : Promise.resolve({ text: '', pages: [] })])
       const originalMessage = [message, ...emlTexts, ...msgTexts, messageOcr.text].filter(Boolean).join('\n\n--- MESSAGE SOURCE ---\n\n')
       const documents: UploadedSource[] = files.map((file) => ({ name: file.name, type: file.type, size: file.size }))
-      const resultPromise = analyzeCase({ originalMessage, userRequest: request, interfaceLanguage: language, recipientLanguage, documents, documentText: documentOcr.text, additionalInformation: additional })
-      const preparationPromise = documentOcr.text.trim()
-        ? prepareStructuredCase({ interfaceLanguage:language, draftLanguage:language, userText:request, documentText:documentOcr.text })
-        : Promise.resolve(null)
-      const [resultState, preparationState] = await Promise.allSettled([resultPromise, preparationPromise])
-      const result = resultState.status === 'fulfilled' ? resultState.value : null
-      const preparation = preparationState.status === 'fulfilled' ? preparationState.value : null
-      if (!preparation && !result) {
-        const failure = preparationState.status === 'rejected'
-          ? preparationState.reason
-          : resultState.status === 'rejected'
-            ? resultState.reason
-            : new Error('Analysis failed.')
-        throw failure
-      }
-      if (resultState.status === 'rejected' && preparation) {
-        console.warn('Legacy case summary failed; continuing with structured case preparation.', resultState.reason)
-      }
-      setAnalysis(result)
-      const reviewData = preparation ? buildCaseReviewData(preparation) : null
-      setStructuredReview(reviewData)
-      if (reviewData) {
-        const protectedDraft = await generateProtectedDraft({ interfaceLanguage: language, review: reviewData })
+      if (documentOcr.text.trim()) {
+        const preparation = await prepareStructuredCase({ interfaceLanguage:language, draftLanguage:language, userText:request, documentText:documentOcr.text })
+        const reviewData = buildCaseReviewData(preparation)
+        setAnalysis(null)
+        setStructuredReview(reviewData)
+        const protectedDraft = await generateProtectedDraft({ interfaceLanguage:language, review:reviewData })
         setDraftSubject(protectedDraft.subject)
         setDraftBody(protectedDraft.body)
-      } else if (result) {
+      } else {
+        const result = await analyzeCase({ originalMessage, userRequest:request, interfaceLanguage:language, recipientLanguage, documents, documentText:'', additionalInformation:additional })
+        setAnalysis(result)
+        setStructuredReview(null)
         setDraftSubject(result.draft.subject)
         setDraftBody(result.draft.body)
       }
       setShowModal(false); go('review')
-    } catch (error) { setAnalysisError(friendlyError(error, 'Analysis failed.')) } finally { setIsAnalyzing(false) }
+    } catch (error) { setAnalysisError(friendlyError(error, 'Analysis failed.', 'analysis')) } finally { setIsAnalyzing(false) }
   }
-  const friendlyError = (error: unknown, fallback: string) => {
+  const friendlyError = (error: unknown, fallback: string, stage: 'analysis'|'draft'|'translation' = 'analysis') => {
     const message = error instanceof Error ? error.message : fallback
     if (/overload|overloaded|busy|capacity|temporar|rate limit|Nebius 429|Nebius 502|Nebius 503|Nebius 504|failed \(504\)|504|gateway timeout/i.test(message)) {
       return ui({
@@ -291,28 +277,21 @@ function App() {
         es:'El procesamiento de IA está ocupado. Espere un momento y vuelva a intentarlo. Sus datos y archivos se conservaron.'
       })
     }
-    if (/safe template validation|protected draft validation|missing or changed|unconfirmed monetary|unconfirmed or changed date/i.test(message)) {
-      return ui({
-        en:'The inquiry did not pass the safety check. Your inputs are still saved. Review the subject and message, then try refining it again.',
-        ja:'問い合わせ文の安全確認に通りませんでした。入力内容は保持されています。件名と本文を確認し、もう一度「AIで文面を整える」をお試しください。',
-        es:'La consulta no superó la comprobación de seguridad. Sus datos siguen guardados. Revise el asunto y el mensaje e inténtelo de nuevo.'
-      })
-    }
-    if (/user-provided explanation is missing|confirmed case data is incomplete/i.test(message)) {
-      return ui({
-        en:'The explanation needed to prepare the inquiry is missing. Return to the input screen and add what happened and what you want the company to do.',
-        ja:'問い合わせ文の作成に必要な説明が不足しています。入力画面に戻り、起きたことと希望する対応を追記してください。',
-        es:'Falta la explicación necesaria para preparar la consulta. Vuelva a la pantalla de entrada y añada lo ocurrido y la respuesta que solicita.'
-      })
-    }
-    if (/case analysis failed|analysis failed|draft refinement failed|translation failed|Nebius \d+/i.test(message)) {
-      return ui({
-        en:'Processing could not be completed. Your inputs are still saved, so please try again.',
-        ja:'処理を完了できませんでした。入力内容は保持されていますので、もう一度お試しください。',
-        es:'No se pudo completar el proceso. Sus datos siguen guardados; inténtelo de nuevo.'
-      })
-    }
-    return message
+    if (stage === 'draft') return ui({
+      en:'The inquiry could not be refined. The current subject and message are still saved. Please review them and try again.',
+      ja:'問い合わせ文を整えられませんでした。現在の件名と本文は保持されています。内容を確認し、もう一度「AIで文面を整える」をお試しください。',
+      es:'No se pudo mejorar la consulta. El asunto y el mensaje actuales siguen guardados. Revíselos e inténtelo de nuevo.'
+    })
+    if (stage === 'translation') return ui({
+      en:'The translation could not be completed. The approved inquiry is still saved. Please try again.',
+      ja:'翻訳を完了できませんでした。承認済みの問い合わせ文は保持されています。もう一度お試しください。',
+      es:'No se pudo completar la traducción. La consulta aprobada sigue guardada. Inténtelo de nuevo.'
+    })
+    return ui({
+      en:'The case could not be organized. Your input and uploaded documents are still saved. Please try organizing the case again.',
+      ja:'案件内容を整理できませんでした。入力内容とアップロード済み資料は保持されています。もう一度「案件内容を整理」をお試しください。',
+      es:'No se pudo organizar el caso. Sus datos y documentos siguen guardados. Inténtelo de nuevo.'
+    })
   }
 
   const refineDraft = async () => {
@@ -321,14 +300,14 @@ function App() {
     try {
       const result = await generateProtectedDraft({ interfaceLanguage:language, review:structuredReview, currentSubject:draftSubject, currentBody:draftBody })
       setDraftSubject(result.subject); setDraftBody(result.body); setTranslated({subject:'',body:''}); setTranslationApproved(false)
-    } catch (error) { setAnalysisError(friendlyError(error, 'Draft refinement failed.')) }
+    } catch (error) { setAnalysisError(friendlyError(error, 'Draft refinement failed.', 'draft')) }
     finally { setIsRefiningDraft(false) }
   }
 
   const translateDraft = async () => {
     setIsAnalyzing(true); setAnalysisError('')
     try { const result = await translateApprovedDraft({ originalMessage:'', userRequest:'', interfaceLanguage:language, recipientLanguage, documents:[], approvedSubject:draftSubject, approvedBody:draftBody }); setTranslated(result); setTranslationApproved(false); go('translation') }
-    catch(error){ setAnalysisError(friendlyError(error, 'Translation failed.')) } finally { setIsAnalyzing(false) }
+    catch(error){ setAnalysisError(friendlyError(error, 'Translation failed.', 'translation')) } finally { setIsAnalyzing(false) }
   }
   const changeLanguage = (lang: Lang) => {
     if (lang !== language) invalidateGeneratedResults()

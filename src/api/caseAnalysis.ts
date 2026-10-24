@@ -19,7 +19,7 @@ export type CaseAnalysis = {
   meta: { mode: 'nebius'; model?: string }
 }
 
-export type DraftCaseReviewData = CaseReviewData & { userOriginalText?: string }
+export type DraftCaseReviewData = CaseReviewData
 
 export type StructureUserInputInput = {
   userText: string
@@ -110,7 +110,6 @@ export function buildCaseReviewData(preparation: CasePreparation): DraftCaseRevi
   const aggregation = preparation.chargeAggregation
   if (aggregation) {
     confirmedFacts.push({ key:'chargeLabel', label:'Disputed item', value:aggregation.selectedLabel, source:'document' })
-    confirmedFacts.push({ key:'chargeSummary', label:'Charge summary', value:JSON.stringify({ currencyCode:aggregation.currencyCode, currencySymbol:aggregation.currencySymbol, lineCount:aggregation.lineCount, totalAmount:aggregation.totalAmount, amountGroups:aggregation.amountGroups }), source:'program' })
   }
   const primary = preparation.identifierSelection.primaryIdentifier
   if (primary) confirmedFacts.push({ key:'primaryIdentifier', label:primary.label, value:primary.value, source:'document' })
@@ -119,6 +118,7 @@ export function buildCaseReviewData(preparation: CasePreparation): DraftCaseRevi
     confirmedFacts,
     userStatements:preparation.userStructure.claims.map(claim=>claim.statement),
     userOriginalText:preparation.userStructure.originalText,
+    chargeAggregation:aggregation,
     requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.totalAmount, currency:aggregation?.currencyCode },
     primaryIdentifier:primary,
     readiness:{ ready:Boolean((preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length)&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.organizationName), hasGuestName:Boolean(preparation.caseContext.guestName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
@@ -139,121 +139,4 @@ export async function runOcr(images:string[]):Promise<OcrResult> {
     return { page:typeof value.page === 'number' ? value.page : index + 1, text, lines }
   })
   return { text:payload.text, pages }
-}
-type DraftLanguage = 'en' | 'ja' | 'es'
-type ReviewChargeSummary = {
-  currencyCode: string
-  currencySymbol: string
-  lineCount: number
-  totalAmount: number
-  amountGroups: { unitAmount:number; count:number; subtotal:number }[]
-}
-function reviewFact(review: CaseReviewData, key: string) {
-  return review.confirmedFacts.find(fact => fact.key === key)?.value.trim() ?? ''
-}
-function reviewChargeSummary(review: CaseReviewData): ReviewChargeSummary | null {
-  const raw = reviewFact(review, 'chargeSummary')
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw) as Partial<ReviewChargeSummary>
-    const totalAmount = Number(parsed.totalAmount)
-    const lineCount = Number(parsed.lineCount)
-    const amountGroups = Array.isArray(parsed.amountGroups)
-      ? parsed.amountGroups.map(group => ({ unitAmount:Number(group.unitAmount), count:Number(group.count), subtotal:Number(group.subtotal) })).filter(group => Number.isFinite(group.unitAmount) && Number.isFinite(group.count) && Number.isFinite(group.subtotal))
-      : []
-    if (!Number.isFinite(totalAmount) || !Number.isFinite(lineCount)) return null
-    return { currencyCode:String(parsed.currencyCode ?? ''), currencySymbol:String(parsed.currencySymbol ?? ''), lineCount, totalAmount, amountGroups }
-  } catch { return null }
-}
-function money(amount: number, summary: ReviewChargeSummary) {
-  const currency = summary.currencyCode || summary.currencySymbol
-  return `${currency ? `${currency} ` : ''}${amount.toFixed(2)}`
-}
-function subjectFor(review: CaseReviewData, language: DraftLanguage) {
-  const label = reviewFact(review, 'chargeLabel')
-  const refund = review.requestedOutcome.code === 'REFUND'
-  const parking = /parking|駐車|estacionamiento/i.test(label)
-  if (language === 'ja') {
-    if (refund && parking) return '駐車料金の返金依頼'
-    if (refund) return label ? `${label}の返金依頼` : '料金の返金依頼'
-    return label ? `${label}に関する確認のお願い` : '請求内容に関する確認のお願い'
-  }
-  if (language === 'es') {
-    if (refund && parking) return 'Solicitud de reembolso del cargo de estacionamiento'
-    if (refund) return label ? `Solicitud de reembolso: ${label}` : 'Solicitud de reembolso'
-    return label ? `Consulta sobre ${label}` : 'Consulta sobre un cargo'
-  }
-  if (refund && parking) return 'Parking Fee Refund Request'
-  if (refund) return label ? `Refund Request for ${label}` : 'Refund Request'
-  return label ? `Inquiry About ${label}` : 'Billing Inquiry'
-}
-function evidenceSummary(summary: ReviewChargeSummary, language: DraftLanguage) {
-  const groups = summary.amountGroups.map(group => `${money(group.unitAmount, summary)} × ${group.count}`).join(' + ')
-  const total = money(summary.totalAmount, summary)
-  if (language === 'ja') return groups ? `${groups} ＝ ${total}` : total
-  return groups ? `${groups} = ${total}` : total
-}
-export function buildConfirmedDraft(review: CaseReviewData, language: DraftLanguage): { subject:string; body:string } {
-  const identifier = review.primaryIdentifier
-  const startDate = reviewFact(review, 'startDate')
-  const endDate = reviewFact(review, 'endDate')
-  const label = reviewFact(review, 'chargeLabel')
-  const summary = reviewChargeSummary(review)
-  const statements = review.userStatements.filter(Boolean)
-  const identifierLine = identifier ? `${identifier.label}: ${identifier.value}` : ''
-  const period = [startDate, endDate].filter(Boolean).join(' - ')
-  const breakdown = summary ? evidenceSummary(summary, language) : ''
-  const total = summary ? money(summary.totalAmount, summary) : ''
-  const subject = subjectFor(review, language)
-
-  if (language === 'ja') {
-    const lines = [
-      'ご担当者様', '',
-      '以下の宿泊・取引についてお問い合わせいたします。', '',
-      identifierLine,
-      period ? `利用期間：${period}` : '',
-      '',
-      ...statements.map(statement => `・${statement}`),
-      '',
-      '資料で確認できた対象明細は以下のとおりです。', '',
-      label ? `対象明細：${label}` : '',
-      breakdown ? `内訳：${breakdown}` : '',
-      total ? `対象金額：${total}` : '',
-      '',
-      total ? `上記対象金額 ${total} の返金をお願いいたします。` : review.requestedOutcome.statement,
-      '',
-      'ご確認のほど、よろしくお願いいたします。'
-    ]
-    return { subject, body:lines.filter((line,index,array) => line || (index > 0 && array[index-1])).join('\n').trim() }
-  }
-  if (language === 'es') {
-    const lines = [
-      'A la persona responsable:', '',
-      'Me comunico en relación con la siguiente reserva o transacción.', '',
-      identifierLine,
-      period ? `Período: ${period}` : '', '',
-      ...statements.map(statement => `- ${statement}`), '',
-      'Los datos confirmados en el documento son los siguientes.', '',
-      label ? `Cargo cuestionado: ${label}` : '',
-      breakdown ? `Desglose: ${breakdown}` : '',
-      total ? `Importe cuestionado: ${total}` : '', '',
-      total ? `Solicito el reembolso del importe confirmado de ${total}.` : review.requestedOutcome.statement, '',
-      'Gracias por revisar este asunto.'
-    ]
-    return { subject, body:lines.filter((line,index,array) => line || (index > 0 && array[index-1])).join('\n').trim() }
-  }
-  const lines = [
-    'Dear Customer Service Team,', '',
-    'I am contacting you regarding the following reservation or transaction.', '',
-    identifierLine,
-    period ? `Service period: ${period}` : '', '',
-    ...statements.map(statement => `- ${statement}`), '',
-    'The following disputed charge was confirmed in the document.', '',
-    label ? `Disputed item: ${label}` : '',
-    breakdown ? `Breakdown: ${breakdown}` : '',
-    total ? `Disputed amount: ${total}` : '', '',
-    total ? `I am requesting a refund of the confirmed disputed amount of ${total}.` : review.requestedOutcome.statement, '',
-    'Thank you for reviewing this matter.'
-  ]
-  return { subject, body:lines.filter((line,index,array) => line || (index > 0 && array[index-1])).join('\n').trim() }
 }
