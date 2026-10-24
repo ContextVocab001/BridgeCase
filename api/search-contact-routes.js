@@ -40,6 +40,20 @@ function officialDiscoveryScore(result,entity,location,index){
   return score
 }
 function withinDomain(result,domain){ return rootDomain(result.url)===domain }
+function normalizedPageTitle(value){
+  return clean(value).toLowerCase().replace(/&amp;/g,'and').replace(/[^a-z0-9]+/g,' ').trim()
+}
+function normalizedPagePath(value){
+  try{
+    const url=new URL(value)
+    return url.pathname.toLowerCase().replace(/\/+$/,'')||'/'
+  }catch{return''}
+}
+function contentDuplicateKey(result){
+  const title=normalizedPageTitle(result.title)
+  const path=normalizedPagePath(result.url)
+  return `${title}|${path}`
+}
 function roleSignals(result){
   const text=`${result.title} ${result.description}`
   const url=result.url.toLowerCase()
@@ -146,20 +160,20 @@ export default async function handler(req,res){
       .filter(result=>supportedRoles.has(result.role)&&!roleSignals(result).generalInfo&&result.score>=9)
       .sort((a,b)=>b.score-a.score)
     const rolePriority=['contact-form','case-guide','location-page','general-support']
-    const candidates=[],usedUrls=new Set(),usedRoles=new Set()
+    const candidates=[],usedUrls=new Set(),usedContent=new Set(),usedRoles=new Set()
     for(const role of rolePriority){
       if(role==='general-support'&&candidates.some(item=>item.purpose==='contact-form'))continue
-      const picked=ranked.find(result=>result.role===role&&!usedUrls.has(result.url))
+      const picked=ranked.find(result=>result.role===role&&!usedUrls.has(result.url)&&!usedContent.has(contentDuplicateKey(result)))
       if(!picked)continue
-      usedUrls.add(picked.url);usedRoles.add(role)
+      usedUrls.add(picked.url);usedContent.add(contentDuplicateKey(picked));usedRoles.add(role)
       candidates.push({label:purposeLabel(role),url:picked.url,kind:'official-page',purpose:role,searchEntity:entity,locationName:location||undefined,recommended:role==='contact-form',reason:picked.description||picked.title,sourceTitle:picked.title,sourceHost:hostOf(picked.url)})
     }
     // A verified official property/location page is useful only when it is distinct
     // from an already selected contact or guide page. Do not add generic pages to fill slots.
     if(!usedRoles.has('location-page')&&candidates.length<3){
       const signals=roleSignals(officialPage)
-      if(signals.location&&!signals.generalInfo&&!usedUrls.has(officialPage.url)){
-        candidates.push({label:purposeLabel('location-page'),url:officialPage.url,kind:'official-page',purpose:'location-page',searchEntity:entity,locationName:location||undefined,recommended:false,reason:officialPage.description||officialPage.title,sourceTitle:officialPage.title,sourceHost:hostOf(officialPage.url)})
+      if(signals.location&&!signals.generalInfo&&!usedUrls.has(officialPage.url)&&!usedContent.has(contentDuplicateKey(officialPage))){
+        usedContent.add(contentDuplicateKey(officialPage));candidates.push({label:purposeLabel('location-page'),url:officialPage.url,kind:'official-page',purpose:'location-page',searchEntity:entity,locationName:location||undefined,recommended:false,reason:officialPage.description||officialPage.title,sourceTitle:officialPage.title,sourceHost:hostOf(officialPage.url)})
       }
     }
     // If the only strong result is one contact page, one result is correct. Never pad to three.
