@@ -160,11 +160,14 @@ export type CaseReviewFact = {
 export type ContactRouteCandidate = {
   label: string
   url: string
-  kind: 'source-page' | 'search'
+  kind: 'source-page' | 'official-page' | 'search'
   purpose: 'case-contact' | 'location-page' | 'general-support' | 'source-page'
   searchEntity: string
   locationName?: string
   recommended?: boolean
+  reason?: string
+  sourceTitle?: string
+  sourceHost?: string
 }
 
 export type CaseReviewData = {

@@ -196,18 +196,34 @@ function App() {
   })
   const contactActionLabel = (kind: string) => {
     if (kind === 'search') return ui({ en: 'Search official site and contact route', ja: '公式サイト・問い合わせ先を検索', es: 'Buscar sitio y contacto oficiales' })
+    if (kind === 'official-page') return ui({ en: 'Open official contact page', ja: '公式問い合わせページを開く', es: 'Abrir página oficial de contacto' })
     return ui({ en: 'Review official site', ja: '公式サイトを確認', es: 'Revisar sitio oficial' })
   }
   const contactCandidates = structuredReview?.contactCandidates ?? analysis?.contactCandidates ?? []
-  const contactCandidateTitle = (candidate: { purpose?: string; searchEntity?: string; locationName?: string; label: string }) => {
+  const resolveDeepContactRoutes = async (reviewData: CaseReviewData): Promise<CaseReviewData> => {
+    const organization = reviewData.confirmedFacts.find(fact=>fact.key==='organization')?.value || ''
+    const location = reviewData.contactCandidates.find(candidate=>candidate.locationName)?.locationName || ''
+    if (!organization) return reviewData
+    try {
+      const response = await fetch('/api/search-contact-routes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity:organization,location,caseType:reviewData.caseType})})
+      const payload = await response.json()
+      if (!response.ok || !Array.isArray(payload?.candidates) || !payload.candidates.length) return reviewData
+      return {...reviewData,contactCandidates:payload.candidates}
+    } catch (error) {
+      console.warn('Deep contact route lookup failed; using search fallback.',error)
+      return reviewData
+    }
+  }
+  const contactCandidateTitle = (candidate: { purpose?: string; searchEntity?: string; locationName?: string; label: string; reason?: string; sourceHost?: string }) => {
     if (candidate.purpose === 'case-contact') return ui({en:'Billing / refund contact route',ja:'請求・返金に関する問い合わせ先',es:'Contacto para facturación o reembolso'})
     if (candidate.purpose === 'location-page') return ui({en:'Official location or property page',ja:'利用施設・営業所の公式ページ',es:'Página oficial de la ubicación'})
     if (candidate.purpose === 'general-support') return ui({en:'Official customer support',ja:'公式カスタマーサポート',es:'Atención al cliente oficial'})
     if (candidate.purpose === 'source-page') return ui({en:'Website printed in the source',ja:'資料に記載されたWebページ',es:'Página indicada en el documento'})
     return candidate.label
   }
-  const contactCandidateReason = (candidate: { label: string; purpose?: string; searchEntity?: string; locationName?: string }) => {
+  const contactCandidateReason = (candidate: { label: string; purpose?: string; searchEntity?: string; locationName?: string; reason?: string; sourceHost?: string }) => {
     const target = [candidate.searchEntity, candidate.locationName].filter(Boolean).join(' / ')
+    if (candidate.reason && candidate.sourceHost) return `${candidate.reason} (${candidate.sourceHost})`
     if (candidate.purpose === 'case-contact') return ui({en:`Searches for the most relevant official form or email route for this case. Target: ${target}`,ja:`今回の請求・返金に近い公式フォームまたはメール窓口を探します。対象：${target}`,es:`Busca el formulario o correo oficial más relacionado con este caso. Objetivo: ${target}`})
     if (candidate.purpose === 'location-page') return ui({en:`Use the official location page to confirm you selected the correct branch or property. Target: ${target}`,ja:`個別の施設・営業所ページで、利用した場所と一致するか確認できます。対象：${target}`,es:`Utiliza la página oficial de la ubicación para confirmar la sucursal correcta. Objetivo: ${target}`})
     if (candidate.purpose === 'general-support') return ui({en:`Fallback route when a dedicated billing form is not available. Target: ${target}`,ja:`請求専用窓口が見つからない場合の公式サポート候補です。対象：${target}`,es:`Ruta alternativa si no existe un formulario específico de facturación. Objetivo: ${target}`})
@@ -267,7 +283,8 @@ function App() {
       const documents: UploadedSource[] = files.map((file) => ({ name: file.name, type: file.type, size: file.size }))
       if (documentOcr.text.trim()) {
         const preparation = await prepareStructuredCase({ interfaceLanguage:language, draftLanguage:language, userText:request, documentText:documentOcr.text })
-        const reviewData = buildCaseReviewData(preparation)
+        const baseReviewData = buildCaseReviewData(preparation)
+        const reviewData = await resolveDeepContactRoutes(baseReviewData)
         setAnalysis(null)
         setStructuredReview(reviewData)
         const protectedDraft = await generateProtectedDraft({ interfaceLanguage:language, review:reviewData })
