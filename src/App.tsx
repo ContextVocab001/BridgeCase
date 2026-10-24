@@ -254,7 +254,20 @@ function App() {
       const preparationPromise = documentOcr.text.trim()
         ? prepareStructuredCase({ interfaceLanguage:language, draftLanguage:language, userText:request, documentText:documentOcr.text })
         : Promise.resolve(null)
-      const [result, preparation] = await Promise.all([resultPromise, preparationPromise])
+      const [resultState, preparationState] = await Promise.allSettled([resultPromise, preparationPromise])
+      const result = resultState.status === 'fulfilled' ? resultState.value : null
+      const preparation = preparationState.status === 'fulfilled' ? preparationState.value : null
+      if (!preparation && !result) {
+        const failure = preparationState.status === 'rejected'
+          ? preparationState.reason
+          : resultState.status === 'rejected'
+            ? resultState.reason
+            : new Error('Analysis failed.')
+        throw failure
+      }
+      if (resultState.status === 'rejected' && preparation) {
+        console.warn('Legacy case summary failed; continuing with structured case preparation.', resultState.reason)
+      }
       setAnalysis(result)
       const reviewData = preparation ? buildCaseReviewData(preparation) : null
       setStructuredReview(reviewData)
@@ -262,7 +275,7 @@ function App() {
         const protectedDraft = await generateProtectedDraft({ interfaceLanguage: language, review: reviewData })
         setDraftSubject(protectedDraft.subject)
         setDraftBody(protectedDraft.body)
-      } else {
+      } else if (result) {
         setDraftSubject(result.draft.subject)
         setDraftBody(result.draft.body)
       }
@@ -448,7 +461,7 @@ function App() {
     !structuredReview.primaryIdentifier ? ui({en:'Reservation, confirmation, or folio number',ja:'予約番号・確認番号・Folio番号のいずれか',es:'Número de reserva, confirmación o folio'}) : ''
   ].filter(Boolean) : []
 
-  const review = analysis && (
+  const review = (analysis || structuredReview) && (
     <main className="workflow-main">{progress(2)}<section className="workflow-heading"><p>{ui({en:'Step 2',ja:'ステップ2',es:'Paso 2'})}</p><h1>{ui({en:'Review your case',ja:'案件内容を確認',es:'Revisa tu caso'})}</h1><span>{ui({en:'Check the facts, your explanation, and the requested outcome before continuing.',ja:'資料から確認した事実、あなたの説明、希望する対応を確認してください。',es:'Comprueba los hechos, tu explicación y el resultado solicitado antes de continuar.'})}</span></section>
       {structuredReview ? <>
         <section className="review-card"><h2>{ui({en:'Confirmed from the source',ja:'資料から確認できた内容',es:'Confirmado en la fuente'})}</h2><div className="facts">{structuredReview.confirmedFacts.map((fact)=><label key={fact.key}><span>{fact.label}</span><b>{formatStructuredFact(fact)}</b></label>)}</div></section>
