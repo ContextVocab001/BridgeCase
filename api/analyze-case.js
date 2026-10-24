@@ -429,22 +429,39 @@ function sourceHasRefundRequest(source,language){
   if(language==='es')return /reembolso|devoluci[oó]n/.test(value)
   return /refund|reimburse/.test(value)
 }
-function deterministicIdentityParagraph(language,slots){
+function deterministicIdentityParagraph(language,slots,caseType='other'){
+  const hasName=Boolean(slots.identity.GUEST_NAME)
+  const hasIdentifier=Boolean(slots.identity.PRIMARY_IDENTIFIER)
   if(language==='ja'){
-    if(slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。'
-    if(slots.identity.GUEST_NAME)return'{{GUEST_NAME}}です。'
-    if(slots.identity.PRIMARY_IDENTIFIER)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の件でお問い合わせいたします。'
+    if(hasName&&hasIdentifier){
+      if(caseType==='hotel')return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。'
+      if(caseType==='rental-car')return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}に関してお問い合わせしている{{GUEST_NAME}}です。'
+      if(caseType==='airline')return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}に関してお問い合わせしている{{GUEST_NAME}}です。'
+      return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}に関してお問い合わせしている{{GUEST_NAME}}です。'
+    }
+    if(hasName)return'{{GUEST_NAME}}です。'
+    if(hasIdentifier)return'{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の件でお問い合わせいたします。'
     return'今回の請求についてお問い合わせいたします。'
   }
   if(language==='es'){
-    if(slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER)return'Soy {{GUEST_NAME}} y mi {{PRIMARY_IDENTIFIER_LABEL}} es {{PRIMARY_IDENTIFIER}}.'
-    if(slots.identity.GUEST_NAME)return'Soy {{GUEST_NAME}}.'
-    if(slots.identity.PRIMARY_IDENTIFIER)return'Me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+    if(hasName&&hasIdentifier){
+      if(caseType==='hotel')return'Soy {{GUEST_NAME}} y me comunico sobre mi estancia con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+      if(caseType==='rental-car')return'Soy {{GUEST_NAME}} y me comunico sobre el alquiler con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+      if(caseType==='airline')return'Soy {{GUEST_NAME}} y me comunico sobre el viaje con {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+      return'Soy {{GUEST_NAME}} y me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+    }
+    if(hasName)return'Soy {{GUEST_NAME}}.'
+    if(hasIdentifier)return'Me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
     return'Me comunico sobre este cargo.'
   }
-  if(slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER)return'My name is {{GUEST_NAME}}, and my {{PRIMARY_IDENTIFIER_LABEL}} is {{PRIMARY_IDENTIFIER}}.'
-  if(slots.identity.GUEST_NAME)return'My name is {{GUEST_NAME}}.'
-  if(slots.identity.PRIMARY_IDENTIFIER)return'I am contacting you about {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+  if(hasName&&hasIdentifier){
+    if(caseType==='hotel')return'My name is {{GUEST_NAME}}, and I am writing regarding my stay under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+    if(caseType==='rental-car')return'My name is {{GUEST_NAME}}, and I am writing regarding the rental under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+    if(caseType==='airline')return'My name is {{GUEST_NAME}}, and I am writing regarding the trip under {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+    return'My name is {{GUEST_NAME}}, and I am writing regarding {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
+  }
+  if(hasName)return'My name is {{GUEST_NAME}}.'
+  if(hasIdentifier)return'I am contacting you about {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.'
   return'I am contacting you about this charge.'
 }
 function composeStructuredMail(parts,data,language){
@@ -457,15 +474,15 @@ function safeStructuredParts(data,language,slots,sourceText){
   const source=cleanDraftText(sourceText||data.userOriginalText||data.statements.join(language==='ja'?'。':'. '))
   const alreadyRequestsRefund=sourceHasRefundRequest(source,language)
   if(language==='ja')return{
-    identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。`:slots.identity.GUEST_NAME?`{{GUEST_NAME}}です。`:slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の件でお問い合わせいたします。`:`今回の請求についてお問い合わせいたします。`,
+    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType),
     issueRequestParagraph:`${source}${source&&!/[。.!?]$/.test(source)?'。':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
   if(language==='es')return{
-    identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`Soy {{GUEST_NAME}} y mi {{PRIMARY_IDENTIFIER_LABEL}} es {{PRIMARY_IDENTIFIER}}.`:slots.identity.GUEST_NAME?`Soy {{GUEST_NAME}}.`:slots.identity.PRIMARY_IDENTIFIER?`Me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.`:`Me comunico sobre este cargo.`,
+    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType),
     issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
   return{
-    identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`My name is {{GUEST_NAME}}, and my {{PRIMARY_IDENTIFIER_LABEL}} is {{PRIMARY_IDENTIFIER}}.`:slots.identity.GUEST_NAME?`My name is {{GUEST_NAME}}.`:slots.identity.PRIMARY_IDENTIFIER?`I am contacting you about {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.`:`I am contacting you about this charge.`,
+    identityParagraph:deterministicIdentityParagraph(language,slots,data.caseType),
     issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
 }
@@ -530,7 +547,7 @@ export default async function handler(req,res){
       const rawSourceText=isRefinement?removeProtectedIdentityParagraph(extractEditableCore(i.currentBody,languageCode),slots):data.userOriginalText
       if(!rawSourceText){res.status(400).json({error:'The user-provided explanation is missing.'});return}
       const sourceText=protectSourceValues(rawSourceText,slots)
-      const identityParagraph=deterministicIdentityParagraph(languageCode,slots)
+      const identityParagraph=deterministicIdentityParagraph(languageCode,slots,data.caseType)
       const mailMeaning={
         caseType:data.caseType,
         mode:isRefinement?'REFINE_CURRENT_DRAFT':'CREATE_FROM_USER_INPUT',
