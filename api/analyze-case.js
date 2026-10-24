@@ -260,11 +260,6 @@ function validateProtectedDraft(result,data,context='ai'){
   const allowedMoney=expectedMoney(data)
   const actualMoney=new Map(extractMoney(combined).map(x=>[moneyKey(x),x]))
   for(const key of actualMoney.keys())if(!allowedMoney.has(key))return{ok:false,reason:`Unconfirmed monetary value detected: ${key}`}
-  if(Number.isFinite(data.requested?.amount)&&data.requested.currency){
-    const required=moneyKey({currency:data.requested.currency,amount:data.requested.amount})
-    const numberPresent=combined.includes(Number(data.requested.amount).toFixed(2))||combined.includes(String(Number(data.requested.amount)))
-    if(!actualMoney.has(required)&&!numberPresent)return{ok:false,reason:`Requested amount missing or changed: ${required}`}
-  }
 
   if(data.primary?.value){
     const expected=canonicalIdentifier(data.primary.value),actual=canonicalIdentifier(combined)
@@ -352,7 +347,6 @@ function paragraphSlots(data,language){
   if(guest)identity.GUEST_NAME=guest
   if(identifier){identity.PRIMARY_IDENTIFIER_LABEL=identifierLabel;identity.PRIMARY_IDENTIFIER=identifier}
   const issue={}
-  if(Number.isFinite(data.requested?.amount)&&data.requested.currency)issue.REFUND_AMOUNT=`${data.requested.currency} ${Number(data.requested.amount).toFixed(2)}`
   return{identity,issue}
 }
 function paragraphTokenCheck(text,slots,paragraphName){
@@ -423,15 +417,15 @@ function safeStructuredParts(data,language,slots,sourceText){
   const alreadyRequestsRefund=sourceHasRefundRequest(source,language)
   if(language==='ja')return{
     identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}で宿泊した{{GUEST_NAME}}です。`:slots.identity.GUEST_NAME?`{{GUEST_NAME}}です。`:slots.identity.PRIMARY_IDENTIFIER?`{{PRIMARY_IDENTIFIER_LABEL}}{{PRIMARY_IDENTIFIER}}の件でお問い合わせいたします。`:`今回の請求についてお問い合わせいたします。`,
-    issueRequestParagraph:`${source}${source&&!/[。.!?]$/.test(source)?'。':''}${slots.issue.REFUND_AMOUNT&&!alreadyRequestsRefund?' 請求された{{REFUND_AMOUNT}}の返金をお願いいたします。':!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
+    issueRequestParagraph:`${source}${source&&!/[。.!?]$/.test(source)?'。':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
   if(language==='es')return{
     identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`Soy {{GUEST_NAME}} y mi {{PRIMARY_IDENTIFIER_LABEL}} es {{PRIMARY_IDENTIFIER}}.`:slots.identity.GUEST_NAME?`Soy {{GUEST_NAME}}.`:slots.identity.PRIMARY_IDENTIFIER?`Me comunico sobre {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.`:`Me comunico sobre este cargo.`,
-    issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${slots.issue.REFUND_AMOUNT&&!alreadyRequestsRefund?' Solicito el reembolso de {{REFUND_AMOUNT}}.':!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
+    issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
   return{
     identityParagraph:slots.identity.GUEST_NAME&&slots.identity.PRIMARY_IDENTIFIER?`My name is {{GUEST_NAME}}, and my {{PRIMARY_IDENTIFIER_LABEL}} is {{PRIMARY_IDENTIFIER}}.`:slots.identity.GUEST_NAME?`My name is {{GUEST_NAME}}.`:slots.identity.PRIMARY_IDENTIFIER?`I am contacting you about {{PRIMARY_IDENTIFIER_LABEL}} {{PRIMARY_IDENTIFIER}}.`:`I am contacting you about this charge.`,
-    issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${slots.issue.REFUND_AMOUNT&&!alreadyRequestsRefund?' I am requesting a refund of {{REFUND_AMOUNT}}.':!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
+    issueRequestParagraph:`${source}${source&&!/[.!?]$/.test(source)?'.':''}${!alreadyRequestsRefund?` ${data.requested.statement}`:''}`
   }
 }
 function mailEnvelope(language){
@@ -525,6 +519,7 @@ STRICT CONTENT RULES
 - Express the requested resolution once only, even if sourceText mentions it more than once.
 - Keep staff conversations as the user's reported experience. Do not strengthen them into a verified promise, admission, or established fact.
 - Do not shorten a detailed sourceText into a generic statement. Preserve the reason for the request and the sequence of events.
+- A confirmed amount is analysis data, not mandatory email prose. Do not add an amount unless sourceText already includes that amount. If sourceText includes it, preserve it exactly.
 - Preserve the difference between confirmed document facts and the user's own statement.
 - Do not mechanically list fields, labels, dates, unit prices, counts, breakdowns, or secondary identifiers.
 - Optional confirmed context may be used only when it makes the explanation materially clearer. It is never mandatory.

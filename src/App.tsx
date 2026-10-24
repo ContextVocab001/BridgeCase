@@ -278,6 +278,27 @@ function App() {
         es:'El procesamiento de IA está ocupado. Espere un momento y vuelva a intentarlo. Sus datos y archivos se conservaron.'
       })
     }
+    if (/safe template validation|protected draft validation|missing or changed|unconfirmed monetary|unconfirmed or changed date/i.test(message)) {
+      return ui({
+        en:'The inquiry did not pass the safety check. Your inputs are still saved. Review the subject and message, then try refining it again.',
+        ja:'問い合わせ文の安全確認に通りませんでした。入力内容は保持されています。件名と本文を確認し、もう一度「AIで文面を整える」をお試しください。',
+        es:'La consulta no superó la comprobación de seguridad. Sus datos siguen guardados. Revise el asunto y el mensaje e inténtelo de nuevo.'
+      })
+    }
+    if (/user-provided explanation is missing|confirmed case data is incomplete/i.test(message)) {
+      return ui({
+        en:'The explanation needed to prepare the inquiry is missing. Return to the input screen and add what happened and what you want the company to do.',
+        ja:'問い合わせ文の作成に必要な説明が不足しています。入力画面に戻り、起きたことと希望する対応を追記してください。',
+        es:'Falta la explicación necesaria para preparar la consulta. Vuelva a la pantalla de entrada y añada lo ocurrido y la respuesta que solicita.'
+      })
+    }
+    if (/case analysis failed|analysis failed|draft refinement failed|translation failed|Nebius \d+/i.test(message)) {
+      return ui({
+        en:'Processing could not be completed. Your inputs are still saved, so please try again.',
+        ja:'処理を完了できませんでした。入力内容は保持されていますので、もう一度お試しください。',
+        es:'No se pudo completar el proceso. Sus datos siguen guardados; inténtelo de nuevo.'
+      })
+    }
     return message
   }
 
