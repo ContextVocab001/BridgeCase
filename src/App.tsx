@@ -271,7 +271,7 @@ function App() {
   }
   const friendlyError = (error: unknown, fallback: string) => {
     const message = error instanceof Error ? error.message : fallback
-    if (/overload|overloaded|busy|capacity|temporar|rate limit|Nebius 429|Nebius 502|Nebius 503|Nebius 504/i.test(message)) {
+    if (/overload|overloaded|busy|capacity|temporar|rate limit|Nebius 429|Nebius 502|Nebius 503|Nebius 504|failed \(504\)|504|gateway timeout/i.test(message)) {
       return ui({
         en:'AI processing is currently busy. Please wait a moment and try again. Your inputs and uploaded files have been kept.',
         ja:'現在AI処理が混み合っています。少し待ってから、もう一度お試しください。入力内容とアップロード済み資料は保持されています。',
