@@ -98,7 +98,51 @@ export async function prepareStructuredCase(input: PrepareCaseInput): Promise<Ca
   const chargeSelection = await selectChargeLabel({ interfaceLanguage:input.interfaceLanguage, userStructure, documentText:input.documentText })
   const chargeAggregation = chargeSelection.selectedLabel ? await aggregateSelectedCharge({ interfaceLanguage:input.interfaceLanguage, selectedLabel:chargeSelection.selectedLabel, documentText:input.documentText }) : null
   const identifierSelection = await selectPrimaryIdentifier({ interfaceLanguage:input.interfaceLanguage, caseType:caseClassification.caseType, documentText:input.documentText })
-  return { userStructure, caseClassification, caseContext, chargeSelection, chargeAggregation, identifierSelection }
+  return { userStructure, caseClassification, caseContext, chargeSelection, chargeAggregation, identifierSelection, documentText:input.documentText }
+}
+
+
+function sourceUrls(text: string) {
+  return [...new Set((text.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? []).map(url => url.replace(/[.,;:!?]+$/, '')))]
+}
+function googleSearch(query: string) {
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`
+}
+function contactCaseWords(caseType: CasePreparation['caseClassification']['caseType']) {
+  if (caseType === 'hotel') return 'billing refund contact form'
+  if (caseType === 'rental-car') return 'past rental billing refund contact form'
+  if (caseType === 'airline') return 'payment refund customer contact form'
+  if (caseType === 'retail') return 'order billing refund contact form'
+  if (caseType === 'restaurant') return 'billing refund contact'
+  if (caseType === 'subscription') return 'billing cancellation refund support form'
+  return 'billing refund customer support contact form'
+}
+function buildContactCandidates(preparation: CasePreparation) {
+  const context = preparation.caseContext
+  const entity = (context.contactSearchName || context.organizationName).trim()
+  const location = context.locationName.trim()
+  const candidates: CaseReviewData['contactCandidates'] = []
+  for (const url of sourceUrls(preparation.documentText).slice(0, 2)) {
+    candidates.push({ label:url, url, kind:'source-page', purpose:'source-page', searchEntity:entity || url, locationName:location || undefined })
+  }
+  if (!entity) return candidates
+  const located = [entity, location].filter(Boolean).join(' ')
+  candidates.push({
+    label:located,
+    url:googleSearch(`${located} official ${contactCaseWords(preparation.caseClassification.caseType)}`),
+    kind:'search', purpose:'case-contact', searchEntity:entity, locationName:location || undefined, recommended:true
+  })
+  if (location) candidates.push({
+    label:located,
+    url:googleSearch(`${located} official location page`),
+    kind:'search', purpose:'location-page', searchEntity:entity, locationName:location
+  })
+  candidates.push({
+    label:entity,
+    url:googleSearch(`${entity} official customer relations billing support`),
+    kind:'search', purpose:'general-support', searchEntity:entity
+  })
+  return candidates.slice(0, 4)
 }
 
 export function buildCaseReviewData(preparation: CasePreparation): DraftCaseReviewData {
@@ -119,6 +163,7 @@ export function buildCaseReviewData(preparation: CasePreparation): DraftCaseRevi
     userStatements:preparation.userStructure.claims.map(claim=>claim.statement),
     userOriginalText:preparation.userStructure.originalText,
     chargeAggregation:aggregation,
+    contactCandidates:buildContactCandidates(preparation),
     requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.totalAmount, currency:aggregation?.currencyCode },
     primaryIdentifier:primary,
     readiness:{ ready:Boolean((preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length)&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.organizationName), hasGuestName:Boolean(preparation.caseContext.guestName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }

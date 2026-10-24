@@ -139,6 +139,10 @@ export type CaseContext = {
   guestName: string
   guestNameQuote: string
   organizationName: string
+  contactSearchName: string
+  contactSearchQuote: string
+  locationName: string
+  locationQuote: string
   organizationQuote: string
   startDate: string
   endDate: string
@@ -152,12 +156,24 @@ export type CaseReviewFact = {
   source: EvidenceSource
 }
 
+
+export type ContactRouteCandidate = {
+  label: string
+  url: string
+  kind: 'source-page' | 'search'
+  purpose: 'case-contact' | 'location-page' | 'general-support' | 'source-page'
+  searchEntity: string
+  locationName?: string
+  recommended?: boolean
+}
+
 export type CaseReviewData = {
   caseType: CaseType
   confirmedFacts: CaseReviewFact[]
   userStatements: string[]
   userOriginalText: string
   chargeAggregation: ChargeAggregation | null
+  contactCandidates: ContactRouteCandidate[]
   requestedOutcome: {
     code: RequestedActionCode
     statement: string
@@ -182,6 +198,7 @@ export type CasePreparation = {
   chargeSelection: ChargeLabelSelection
   chargeAggregation: ChargeAggregation | null
   identifierSelection: IdentifierSelection
+  documentText: string
 }
 
 export type LanguageIndependentCase = {

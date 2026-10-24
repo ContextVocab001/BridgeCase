@@ -706,13 +706,17 @@ RULES:
       if(!documentText){res.status(400).json({error:'OCR text is required.'});return}
       const contextSystem=`Extract only the organization and transaction/service date range from OCR_TEXT. Return JSON only.
 OUTPUT SHAPE:
-{"guestName":"","guestNameQuote":"","organizationName":"","organizationQuote":"","startDate":"","endDate":"","dateQuotes":[""]}
+{"guestName":"","guestNameQuote":"","organizationName":"","organizationQuote":"","contactSearchName":"","contactSearchQuote":"","locationName":"","locationQuote":"","startDate":"","endDate":"","dateQuotes":[""]}
 RULES:
 - Use only OCR_TEXT. Do not use outside knowledge.
 - guestName must be the guest/customer name explicitly printed in OCR_TEXT. Never infer it from an email address, cardholder fragment, loyalty account, or outside knowledge.
 - guestNameQuote must be an exact OCR_TEXT row or contiguous excerpt supporting guestName.
 - organizationName must be a clean, searchable organization/property/company name supported by OCR_TEXT. Remove decorative symbols such as registered or trademark marks, but do not invent or expand the name.
 - organizationQuote must be an OCR_TEXT row or contiguous excerpt supporting the organization name. It may contain decorative symbols, spacing differences, or surrounding address text.
+- contactSearchName is the clean searchable business, brand, property, carrier, or provider name visibly printed in the receipt header or transaction details. It may equal organizationName. Do not use a payment processor when a more specific provider is visible.
+- contactSearchQuote must be an exact excerpt supporting contactSearchName.
+- locationName is the clearly printed branch, property, airport, city/state, or service location useful for finding the correct official page. Keep the printed wording and do not infer a location.
+- locationQuote must be an exact excerpt supporting locationName.
 - For hotel, rental-car, and airline cases, startDate/endDate are the printed service/usage dates when clearly labeled. If OCR_TEXT contains a clearly printed paired range such as arrival/departure, check-in/check-out, rental start/return, pickup/drop-off, or travel departure/arrival, return both endpoints exactly as printed; do not omit the second endpoint. For other cases, use transaction/order/service dates only when clearly supported.
 - Keep dates in the exact source format. Do not calculate duration, nights, days, or quantities.
 - dateQuotes must contain exact OCR_TEXT lines supporting the dates.
@@ -732,11 +736,17 @@ ${documentText}`}],1000,0)
       const organizationTokens=evidenceTokens(organizationName)
       const sufficientlySpecific=organizationTokens.length>=2||normalizeEvidenceText(organizationName).length>=8
       const validOrganization=organizationName&&organizationSupported&&quoteSupported&&sufficientlySpecific
+      const contactSearchName=str(extracted?.contactSearchName)
+      const contactSearchQuote=str(extracted?.contactSearchQuote)
+      const contactSearchSupported=contactSearchName&&orderedEvidenceMatch(documentText,contactSearchName)&&(!contactSearchQuote||orderedEvidenceMatch(documentText,contactSearchQuote))
+      const locationName=str(extracted?.locationName)
+      const locationQuote=str(extracted?.locationQuote)
+      const locationSupported=locationName&&orderedEvidenceMatch(documentText,locationName)&&(!locationQuote||orderedEvidenceMatch(documentText,locationQuote))
       const dateQuotes=arr(extracted?.dateQuotes).filter(quote=>orderedEvidenceMatch(documentText,quote)).slice(0,3)
       const startDate=str(extracted?.startDate),endDate=str(extracted?.endDate)
       const supportedDate=value=>!value||orderedEvidenceMatch(documentText,value)||dateQuotes.some(quote=>normalizeEvidenceText(quote).includes(normalizeEvidenceText(value)))
       const acceptedOrganizationQuote=validOrganization?(evidenceLinesForLabel(documentText,organizationName,1)[0]||organizationQuote):''
-      res.status(200).json({guestName:guestNameSupported?guestName:'',guestNameQuote:guestNameSupported?(evidenceLinesForLabel(documentText,guestName,1)[0]||guestNameQuote):'',organizationName:validOrganization?organizationName:'',organizationQuote:acceptedOrganizationQuote,startDate:supportedDate(startDate)?startDate:'',endDate:supportedDate(endDate)?endDate:'',dateQuotes});return
+      res.status(200).json({guestName:guestNameSupported?guestName:'',guestNameQuote:guestNameSupported?(evidenceLinesForLabel(documentText,guestName,1)[0]||guestNameQuote):'',organizationName:validOrganization?organizationName:'',organizationQuote:acceptedOrganizationQuote,contactSearchName:contactSearchSupported?contactSearchName:(validOrganization?organizationName:''),contactSearchQuote:contactSearchSupported?(evidenceLinesForLabel(documentText,contactSearchName,1)[0]||contactSearchQuote):acceptedOrganizationQuote,locationName:locationSupported?locationName:'',locationQuote:locationSupported?(evidenceLinesForLabel(documentText,locationName,1)[0]||locationQuote):'',startDate:supportedDate(startDate)?startDate:'',endDate:supportedDate(endDate)?endDate:'',dateQuotes});return
     }
     if(i.mode==='classify-case-type'){
       const documentText=str(i.documentText)
