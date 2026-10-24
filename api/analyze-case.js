@@ -499,6 +499,10 @@ function composeMail(core,language){
   const body=cleanDraftText(core?.body).trim()
   return{subject,body:`${envelope.greeting}\n\n${body}\n\n${envelope.closing}`}
 }
+function removeUnverifiedSenderPlaceholders(value){
+  const placeholder=/^\s*(?:\[(?:sender|your|guest|customer)\s*(?:name|information|contact information)?\]|<(?:sender|your)[ _-]?name>|(?:sender|your)[ _-]?name)\s*$/i
+  return cleanDraftText(value).split(/\r?\n/).filter(line=>!placeholder.test(line)).join('\n').replace(/\n{3,}/g,'\n\n').trim()
+}
 function safeProtectedDraft(data,language){
   const facts=data.facts.map(fact=>`${localizedFactLabel(fact,language)}: ${safeFactValue(fact)}`).filter(line=>!/[：:]\s*$/.test(line))
   const statements=data.statements.map(statement=>`- ${statement}`)
@@ -790,7 +794,8 @@ FORMAT:
 - Email addresses and contact details normally belong in the email sender information or dedicated form fields, not in the message body or signature.
 - Keep the subject neutral and construct it only from the current requested action, disputed item, and exact primary identifier type/value.`
       const result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:`APPROVED SUBJECT:\n${i.approvedSubject}\n\nAPPROVED BODY:\n${i.approvedBody}`}],2600,0)
-      res.status(200).json({subject:str(result.subject),body:cleanDraftText(result.body)});return
+      const translatedBody=removeUnverifiedSenderPlaceholders(result.body)
+      res.status(200).json({subject:str(result.subject),body:translatedBody});return
     }
     const schema='{"confirmedFacts":[{"label":"","value":"","source":"document|message|user"}],"userStatements":[""],"requestedOutcome":"","readiness":{"targetIdentified":true,"transactionIdentified":true,"issueIdentified":true,"outcomeIdentified":true,"missingFields":[{"key":"","label":"","reason":"","alternatives":[""]}]},"messageSource":{"senderName":"","senderEmail":"","replyTo":"","subject":"","date":"","isForwarded":false,"isNoReply":false,"noReplyReason":"","attachments":[""]},"referenceInformation":[{"label":"","value":"","source":"document|message|user"}],"contactCandidates":[{"label":"","url":"","reason":"","kind":"official-site|search","recommended":true}],"draft":{"subject":"","body":""}}'
     const system=`Use ${ui}. Return JSON only in the supplied shape.

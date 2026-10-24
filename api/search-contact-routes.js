@@ -6,8 +6,10 @@ const BLOCKED_HOSTS = [
   'hotels.com','trip.com','agoda.com','kayak.com','priceline.com','justanswer.com'
 ]
 const AGGREGATOR_WORDS = /reviews?|complaints?|consumer|phone number|customer service number|how to reach|faq|directory|travel guide|book now|compare prices/i
-const CONTACT_WORDS = /contact us|support|customer care|billing|billing issue|charges?|refund|past rental|receipt|submit a question|feedback|claim|concern/i
-const LOCATION_WORDS = /location|airport|hotel|property|branch|station|office|our location/i
+const SENDABLE_WORDS = /contact us|contact form|customer support form|submit a question|submit (?:a )?request|send (?:us )?a message|email us|write to us|get in touch|feedback form/i
+const GUIDE_WORDS = /billing issue|billing accuracy|charges?|refund|fees?|receipt|help article|topic detail|what do i do|frequently asked|faq/i
+const LOCATION_WORDS = /location details|our location|airport|hotel information|property details|branch|station|office|address|hours/i
+const GENERAL_INFO_WORDS = /about us|history|amenities|housekeeping|cleaning|travel guide|gallery|things to do|accommodations|rooms? & suites?/i
 const clean = value => typeof value === 'string' ? value.trim() : ''
 const tokens = value => clean(value).toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length > 2)
 function hostOf(value){ try { return new URL(value).hostname.toLowerCase().replace(/^www\./,'') } catch { return '' } }
@@ -38,19 +40,39 @@ function officialDiscoveryScore(result,entity,location,index){
   return score
 }
 function withinDomain(result,domain){ return rootDomain(result.url)===domain }
+function roleSignals(result){
+  const text=`${result.title} ${result.description}`
+  const url=result.url.toLowerCase()
+  const sendable=SENDABLE_WORDS.test(text)||/\/(?:contact|contact-us|support\/contact|customer-support-form)(?:[/.?]|$)/i.test(url)||/contact\.mi|customersupportform|submit.*question/i.test(url)
+  const guide=GUIDE_WORDS.test(text)||/\/(?:article|topic|help|faq)(?:[/.?]|$)/i.test(url)
+  const location=LOCATION_WORDS.test(text)||/\/(?:location|locations|hotels|hotel|property)(?:[/.?]|$)/i.test(url)
+  const generalInfo=GENERAL_INFO_WORDS.test(text)&&!sendable&&!guide
+  return{sendable,guide,location,generalInfo}
+}
 function purposeScore(result,purpose,entity,location,index){
   const text=`${result.title} ${result.description} ${result.url}`
-  let score=Math.max(0,6-index)+termCoverage(text,entity)*5
-  if(purpose==='case-contact'&&CONTACT_WORDS.test(text))score+=10
-  if(purpose==='location-page')score+=termCoverage(text,location)*10+(LOCATION_WORDS.test(text)?4:0)
-  if(purpose==='general-support'&&/contact us|support|help|customer care/i.test(text))score+=8
+  const signals=roleSignals(result)
+  let score=Math.max(0,8-index)+termCoverage(text,entity)*4
+  if(purpose==='contact-form')score+=signals.sendable?20:-8
+  if(purpose==='case-guide')score+=signals.guide?14:-6
+  if(purpose==='location-page')score+=termCoverage(text,location)*10+(signals.location?8:-4)
+  if(purpose==='general-support')score+=signals.sendable?10:(/support|customer care|help/i.test(text)?4:-5)
+  if(signals.generalInfo)score-=18
   if(AGGREGATOR_WORDS.test(text))score-=15
   return score
 }
 function purposeLabel(purpose){
-  if(purpose==='case-contact')return'Official billing / refund contact page'
+  if(purpose==='contact-form')return'Official contact form'
+  if(purpose==='case-guide')return'Official billing / refund guidance'
   if(purpose==='location-page')return'Official location or property page'
   return'Official customer support page'
+}
+function candidateRole(result,requestedPurpose){
+  const signals=roleSignals(result)
+  if(signals.sendable)return'contact-form'
+  if(signals.guide)return'case-guide'
+  if(signals.location)return'location-page'
+  return requestedPurpose==='general-support'?'general-support':'general-information'
 }
 async function braveSearch(key,query,count=10){
   const url=new URL(BRAVE_URL)
@@ -95,7 +117,8 @@ export default async function handler(req,res){
     console.info('Official domain candidate selected',{officialDomain,sourceUrl:officialPage.url,score:officialPage.score})
     const task=caseType==='rental-car'?'past rental billing refund':caseType==='hotel'?'billing issue refund':caseType==='airline'?'payment refund':'billing refund'
     const plans=[
-      {purpose:'case-contact',query:`site:${officialDomain} ${task} contact form`},
+      {purpose:'contact-form',query:`site:${officialDomain} contact form submit question ${task}`},
+      {purpose:'case-guide',query:`site:${officialDomain} ${task} help`},
       {purpose:'location-page',query:`site:${officialDomain} ${entity} ${location}`},
       {purpose:'general-support',query:`site:${officialDomain} contact us customer support`}
     ]
@@ -110,19 +133,42 @@ export default async function handler(req,res){
       }
       if(plan!==plans[plans.length-1])await pause()
     }
-    const candidates=[],usedUrls=new Set()
+    const pooled=[]
     for(const {plan,results} of batches){
-      const ranked=results.map((result,index)=>({...result,score:purposeScore(result,plan.purpose,entity,location,index)})).filter(result=>result.score>=7).sort((a,b)=>b.score-a.score)
-      const picked=ranked.find(result=>!usedUrls.has(result.url))
+      for(const [index,result] of results.entries()){
+        const role=candidateRole(result,plan.purpose)
+        const score=purposeScore(result,plan.purpose,entity,location,index)
+        pooled.push({...result,requestedPurpose:plan.purpose,role,score})
+      }
+    }
+    const supportedRoles=new Set(['contact-form','case-guide','location-page','general-support'])
+    const ranked=pooled
+      .filter(result=>supportedRoles.has(result.role)&&!roleSignals(result).generalInfo&&result.score>=9)
+      .sort((a,b)=>b.score-a.score)
+    const rolePriority=['contact-form','case-guide','location-page','general-support']
+    const candidates=[],usedUrls=new Set(),usedRoles=new Set()
+    for(const role of rolePriority){
+      if(role==='general-support'&&candidates.some(item=>item.purpose==='contact-form'))continue
+      const picked=ranked.find(result=>result.role===role&&!usedUrls.has(result.url))
       if(!picked)continue
-      usedUrls.add(picked.url)
-      candidates.push({label:purposeLabel(plan.purpose),url:picked.url,kind:'official-page',purpose:plan.purpose,searchEntity:entity,locationName:location||undefined,recommended:plan.purpose==='case-contact',reason:picked.description||picked.title,sourceTitle:picked.title,sourceHost:hostOf(picked.url)})
+      usedUrls.add(picked.url);usedRoles.add(role)
+      candidates.push({label:purposeLabel(role),url:picked.url,kind:'official-page',purpose:role,searchEntity:entity,locationName:location||undefined,recommended:role==='contact-form',reason:picked.description||picked.title,sourceTitle:picked.title,sourceHost:hostOf(picked.url)})
     }
-    if(!candidates.some(item=>item.purpose==='location-page')){
-      candidates.push({label:purposeLabel('location-page'),url:officialPage.url,kind:'official-page',purpose:'location-page',searchEntity:entity,locationName:location||undefined,recommended:false,reason:officialPage.description||officialPage.title,sourceTitle:officialPage.title,sourceHost:hostOf(officialPage.url)})
+    // A verified official property/location page is useful only when it is distinct
+    // from an already selected contact or guide page. Do not add generic pages to fill slots.
+    if(!usedRoles.has('location-page')&&candidates.length<3){
+      const signals=roleSignals(officialPage)
+      if(signals.location&&!signals.generalInfo&&!usedUrls.has(officialPage.url)){
+        candidates.push({label:purposeLabel('location-page'),url:officialPage.url,kind:'official-page',purpose:'location-page',searchEntity:entity,locationName:location||undefined,recommended:false,reason:officialPage.description||officialPage.title,sourceTitle:officialPage.title,sourceHost:hostOf(officialPage.url)})
+      }
     }
+    // If the only strong result is one contact page, one result is correct. Never pad to three.
     const finalCandidates=candidates.slice(0,3)
-    console.info('Official contact lookup completed',{mode:'deep-search',officialDomain,candidateCount:finalCandidates.length,urls:finalCandidates.map(item=>item.url)})
+    if(!finalCandidates.length){
+      console.warn('No useful official contact candidate survived role classification',{officialDomain})
+      res.status(200).json({candidates:[fallbackSearch(entity,location,caseType)],mode:'search-fallback',officialDomain,warning:'No useful official contact page was confirmed.'});return
+    }
+    console.info('Official contact lookup completed',{mode:'deep-search',officialDomain,candidateCount:finalCandidates.length,roles:finalCandidates.map(item=>item.purpose),urls:finalCandidates.map(item=>item.url)})
     res.status(200).json({candidates:finalCandidates,mode:'deep-search',officialDomain})
   }catch(error){
     console.error('Official contact lookup failed',error)
