@@ -232,15 +232,29 @@ function localizedFactLabel(fact,language){
   return labels[language]?.[fact?.key]||str(fact?.label)||str(fact?.key)
 }
 function protectedDraftData(review){
-  const facts=Array.isArray(review?.confirmedFacts)?review.confirmedFacts.map(x=>({key:str(x?.key),label:str(x?.label),value:safeFactValue(x),source:str(x?.source)})).filter(x=>x.label&&x.value):[]
+  const rawFacts=Array.isArray(review?.confirmedFacts)?review.confirmedFacts:[]
+  const chargeSummaries=rawFacts.filter(x=>str(x?.key)==='chargeSummary').map(x=>parseJsonObject(x?.value)).filter(Boolean)
+  const facts=rawFacts.map(x=>({key:str(x?.key),label:str(x?.label),value:safeFactValue(x),source:str(x?.source)})).filter(x=>x.label&&x.value)
   const statements=arr(review?.userStatements)
   const requested=review?.requestedOutcome&&typeof review.requestedOutcome==='object'?{code:str(review.requestedOutcome.code),statement:str(review.requestedOutcome.statement),amount:Number.isFinite(Number(review.requestedOutcome.amount))?Number(review.requestedOutcome.amount):undefined,currency:str(review.requestedOutcome.currency).toUpperCase()}:{code:'OTHER',statement:''}
   const primary=review?.primaryIdentifier&&typeof review.primaryIdentifier==='object'?{type:str(review.primaryIdentifier.type),label:str(review.primaryIdentifier.label),value:str(review.primaryIdentifier.value)}:null
-  return{caseType:str(review?.caseType)||'other',facts,statements,requested,primary,userOriginalText:str(review?.userOriginalText)}
+  return{caseType:str(review?.caseType)||'other',facts,chargeSummaries,statements,requested,primary,userOriginalText:str(review?.userOriginalText)}
 }
 function expectedMoney(data){
   const records=[]
   for(const fact of data.facts)records.push(...extractMoney(fact.value))
+  for(const summary of data.chargeSummaries||[]){
+    const currency=str(summary?.currencyCode).toUpperCase()||currencyCode(summary?.currencySymbol)
+    if(!currency)continue
+    const add=(amount,raw)=>{const value=Number(amount);if(Number.isFinite(value))records.push({currency,amount:Math.round(value*100)/100,raw})}
+    add(summary?.totalAmount,'chargeSummary.totalAmount')
+    for(const group of Array.isArray(summary?.amountGroups)?summary.amountGroups:[]){
+      add(group?.unitAmount,'chargeSummary.amountGroups.unitAmount')
+      add(group?.subtotal,'chargeSummary.amountGroups.subtotal')
+      const unit=Number(group?.unitAmount),count=Number(group?.count)
+      if(Number.isFinite(unit)&&Number.isFinite(count)&&count>0)add(unit*count,'chargeSummary.amountGroups.calculatedSubtotal')
+    }
+  }
   if(Number.isFinite(data.requested?.amount)&&data.requested.currency)records.push({currency:data.requested.currency,amount:Number(data.requested.amount),raw:'requestedOutcome'})
   return new Map(records.map(x=>[moneyKey(x),x]))
 }
@@ -279,7 +293,7 @@ function validateProtectedDraft(result,data,context='ai'){
     if(match&&!new RegExp(`(^|\\D)${match[0]}(\\D|$)`).test(combined))return{ok:false,reason:`Confirmed count missing or changed: ${fact.value}`}
   }
 
-  console.info('Protected draft validation passed',{context,allowedMoney:[...allowedMoney.keys()],actualMoney:[...actualMoney.keys()],identifier:data.primary?.value||'',allowedDates,actualDates})
+  console.info('Protected draft validation passed',{context,allowedMoney:[...allowedMoney.keys()],allowedMoneySources:[...allowedMoney.values()].map(x=>({key:moneyKey(x),source:x.raw})),actualMoney:[...actualMoney.keys()],identifier:data.primary?.value||'',allowedDates,actualDates})
   return{ok:true,subject,body}
 }
 function draftSlots(data){
