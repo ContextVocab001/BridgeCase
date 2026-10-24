@@ -115,7 +115,7 @@ export function buildCaseReviewData(preparation: CasePreparation): CaseReviewDat
     userStatements:preparation.userStructure.claims.map(claim=>claim.statement),
     requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.totalAmount, currency:aggregation?.currencyCode },
     primaryIdentifier:primary,
-    readiness:{ ready:Boolean(preparation.caseContext.guestName&&primary&&(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length)&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.guestName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
+    readiness:{ ready:Boolean(preparation.caseContext.guestName&&primary&&(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length)&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.organizationName), hasGuestName:Boolean(preparation.caseContext.guestName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
   }
 }
 export async function translateApprovedDraft(input: AnalyzeCaseInput): Promise<{subject:string;body:string}> { return post({...input,mode:'translate'}) }
