@@ -63,7 +63,7 @@ export type PrepareCaseInput = {
   userText: string
   documentText: string
 }
-export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier' | 'generate-protected-draft'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string>; review?: DraftCaseReviewData; additionalExplanation?: string; currentSubject?: string; currentBody?: string }
+export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier' | 'generate-protected-draft'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string>; review?: DraftCaseReviewData; currentSubject?: string; currentBody?: string }
 
 async function readJson(response: Response) {
   const raw = await response.text()
@@ -81,8 +81,8 @@ async function post(input: AnalyzeCaseInput) {
   return payload
 }
 export async function analyzeCase(input: AnalyzeCaseInput): Promise<CaseAnalysis> { return post({...input,mode:'analyze'}) }
-export async function generateProtectedDraft(input: { interfaceLanguage: LanguageCode; review: DraftCaseReviewData; additionalExplanation?: string; currentSubject?: string; currentBody?: string }): Promise<{subject:string;body:string;generationMode:'ai'|'safe-template';validationAttempts:number}> {
-  return post({mode:'generate-protected-draft',interfaceLanguage:input.interfaceLanguage,recipientLanguage:input.interfaceLanguage,review:input.review,additionalExplanation:input.additionalExplanation,currentSubject:input.currentSubject,currentBody:input.currentBody,originalMessage:'',userRequest:'',documents:[]})
+export async function generateProtectedDraft(input: { interfaceLanguage: LanguageCode; review: DraftCaseReviewData; currentSubject?: string; currentBody?: string }): Promise<{subject:string;body:string;generationMode:'ai'|'safe-template';validationAttempts:number}> {
+  return post({mode:'generate-protected-draft',interfaceLanguage:input.interfaceLanguage,recipientLanguage:input.interfaceLanguage,review:input.review,currentSubject:input.currentSubject,currentBody:input.currentBody,originalMessage:'',userRequest:'',documents:[]})
 }
 
 export async function structureUserInput(input: StructureUserInputInput): Promise<UserInputStructure> { return post({...input,mode:'structure-user-input',originalMessage:'',userRequest:input.userText,recipientLanguage:input.draftLanguage,documents:[]}) }

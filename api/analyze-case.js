@@ -332,10 +332,17 @@ function buildDeterministicSubject(data,language){
   if(action==='EXPLANATION')return`Request for clarification about the ${topic}`
   return'Inquiry'
 }
-function paragraphSlots(data){
+function localizedIdentifierLabel(label,language){
+  const value=normalizedProtected(label)
+  if(language==='ja'){if(/folio/i.test(value))return'Folio番号';if(/reservation|booking|confirmation/i.test(value))return'予約番号';return'識別番号'}
+  if(language==='es'){if(/folio/i.test(value))return'número de folio';if(/reservation|booking|confirmation/i.test(value))return'número de reserva';return'número de referencia'}
+  return value
+}
+function paragraphSlots(data,language){
   const guest=data.facts.find(x=>x.key==='guestName')?.value||''
   const identifier=data.primary?.value||''
-  const identifierLabel=data.primary?.label||'Reference number'
+  const rawIdentifierLabel=data.primary?.label||'Reference number'
+  const identifierLabel=localizedIdentifierLabel(rawIdentifierLabel,language)
   const identity={}
   if(guest)identity.GUEST_NAME=guest
   if(identifier){identity.PRIMARY_IDENTIFIER_LABEL=identifierLabel;identity.PRIMARY_IDENTIFIER=identifier}
@@ -418,12 +425,11 @@ export default async function handler(req,res){
     if(i.mode==='generate-protected-draft'){
       const data=protectedDraftData(i.review)
       if(!data.facts.length||!data.statements.length||!data.requested.statement){res.status(400).json({error:'Confirmed case data is incomplete.'});return}
-      const slots=paragraphSlots(data)
+      const slots=paragraphSlots(data,languageCode)
       const mailMeaning={
         caseType:data.caseType,
         userOriginalText:data.userOriginalText,
         structuredUserStatements:data.statements,
-        additionalExplanation:str(i.additionalExplanation),
         currentDraft:str(i.currentBody)?{subject:str(i.currentSubject),body:str(i.currentBody)}:null,
         requestedOutcome:{code:data.requested.code,statement:data.requested.statement},
         optionalConfirmedContext:data.facts.filter(x=>!['guestName','primaryIdentifier','chargeSummary'].includes(x.key)).map(x=>({key:x.key,value:x.value})),
@@ -444,7 +450,6 @@ IMMUTABLE PLACEHOLDERS
 STRICT CONTENT RULES
 - Use only MAIL_MEANING. Do not infer, strengthen, calculate, or add facts.
 - userOriginalText is the primary source for the user's issue, reason, background, negation, and requested action. Preserve every material meaning instead of summarizing it down to one point.
-- additionalExplanation contains optional text entered on the draft screen. Integrate all material details naturally without inventing anything.
 - If currentDraft is present, improve that draft rather than replacing the user's meaning. Preserve the user's manual edits unless they conflict with protected confirmed values.
 - The user may describe a staff conversation. Keep it as the user's reported experience and do not strengthen it into a verified promise or admission.
 - Preserve the difference between confirmed document facts and the user's own statement.
@@ -452,7 +457,11 @@ STRICT CONTENT RULES
 - Optional confirmed context may be used only when it makes the explanation materially clearer. It is never mandatory.
 - Do not write a subject, greeting, closing, sign-off, sender signature, bullets, headings, or labels.
 - Do not mention that an AI, OCR, document, or analysis was used.
-- Keep the message polite, human, and suitable to send without editing.`
+- Keep the message polite, human, and suitable to send without editing.
+- When writing in Japanese, use natural Japanese business-email prose in consistent desu/masu style. Use complete sentences ending naturally with forms such as です, ます, ました, ません, or お願いいたします.
+- In Japanese, do not use clipped report-like fragments such as 「請求されていた。」 when natural customer wording such as 「請求されていました。」 is appropriate.
+- In Japanese, add natural particles and spacing around inserted identifiers. For example, write 「Folio番号76941で宿泊したTaito Sugiuraです。」 rather than mechanically joining an English label and number.
+- Preserve the user's reported background, including staff conversations, when it appears in userOriginalText or currentDraft. Do not omit it merely to shorten the message.`
       let lastReason=''
       for(let attempt=1;attempt<=2;attempt++){
         const retry=attempt===2?`\nPREVIOUS ATTEMPT FAILED: ${lastReason}. Correct only the stated failure and return both paragraphs again.`:''
