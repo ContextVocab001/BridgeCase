@@ -151,10 +151,21 @@ function validIdentifierValue(type,value){
   if(type==='PNR')return/^[A-Z0-9]{5,8}$/i.test(cleanValue)
   return/^[A-Z0-9][A-Z0-9\-]{2,39}$/i.test(cleanValue)
 }
+function identifierCandidateValue(line){
+  const value=str(line).replace(/^[#:\-\s]+|[#:\-\s]+$/g,'')
+  const match=value.match(/\b[A-Z0-9][A-Z0-9-]{2,39}\b/i)
+  return match?.[0]||''
+}
 function identifierContexts(documentText,caseType){
   const lines=str(documentText).split(/\r?\n/).map(line=>line.trim()).filter(Boolean),contexts=[]
   for(const [type,label,pattern,priority] of identifierSpecs(caseType)){
-    lines.forEach((line,index)=>{if(pattern.test(line))contexts.push({type,label,priority,line,index,nearby:lines.slice(Math.max(0,index-1),Math.min(lines.length,index+2))})})
+    lines.forEach((line,index)=>{
+      if(!pattern.test(line))return
+      const start=Math.max(0,index-8),end=Math.min(lines.length,index+9)
+      const block=lines.slice(start,end).map((text,offset)=>({lineNumber:start+offset+1,text}))
+      const valueCandidates=block.map(item=>({lineNumber:item.lineNumber,value:identifierCandidateValue(item.text),text:item.text})).filter(item=>validIdentifierValue(type,item.value))
+      contexts.push({type,label,priority,labelLineNumber:index+1,labelLine:line,block,valueCandidates})
+    })
   }
   return contexts
 }
@@ -801,12 +812,15 @@ OUTPUT SHAPE:
 {"candidates":[{"type":"","label":"","value":"","priority":1,"evidenceQuote":""}]}
 RULES:
 - Use only IDENTIFIER_CONTEXTS and OCR_TEXT.
-- A value must belong to the printed label in the same row or clearly paired local block. Do not take a city, property name, heading, date, amount, room number, or nearby column value.
+- Understand the document as a visual information block, not as a flat next-token sequence. Labels may be listed first and their values may appear on later lines in the same card or column.
+- For each context, pair the printed label with the value that occupies the corresponding semantic row in that local block. Use label order, neighboring labels, value order, expected value type, and the whole block together.
+- Example pattern: if a Guest Information block lists Guest Name, Confirmation Number, Folio Number and later lists JORDAN TESTER, 47281935, 815204 in corresponding order, pair Folio Number with 815204. Do not pair Folio Number with a hotel name, city, state, date, room number, amount, heading, or unrelated nearby column.
+- valueCandidates are only possible values found near the label. Select among them by semantic correspondence; proximity alone is not sufficient.
 - Preserve the exact identifier label and value. Folio Number must remain Folio Number.
 - Folio, confirmation, reservation, agreement, ticket, order, invoice, transaction and reference identifiers must contain at least one digit.
-- evidenceQuote must be an exact OCR line containing both the label and its value whenever possible.
+- evidenceQuote must be an exact contiguous OCR excerpt containing the label and selected value. It may span multiple lines when the label and value are separated by the document layout.
 - Use the supplied type, label and priority from IDENTIFIER_CONTEXTS. Do not invent an identifier type.
-- Return no candidate when the value is ambiguous.`
+- Return no candidate when the local block does not support a clear pairing.`
       let result
       try{
         const chosen=await call(key,model,[{role:'system',content:identifierSystem},{role:'user',content:`CASE_TYPE:${caseType}
@@ -818,7 +832,10 @@ ${documentText}`}],1200,0)
         for(const item of Array.isArray(chosen?.candidates)?chosen.candidates:[]){
           const type=str(item?.type),value=str(item?.value),evidenceQuote=str(item?.evidenceQuote),spec=allowed.get(type)
           if(!spec||!validIdentifierValue(type,value)||!orderedEvidenceMatch(documentText,value))continue
-          if(evidenceQuote&&(!orderedEvidenceMatch(documentText,evidenceQuote)||!normalizeEvidenceText(evidenceQuote).includes(normalizeEvidenceText(value))))continue
+          const evidenceNormalized=normalizeEvidenceText(evidenceQuote)
+          const labelSupported=evidenceNormalized&&evidenceTokens(spec.label).every(token=>evidenceNormalized.includes(token))
+          const valueSupported=evidenceNormalized.includes(normalizeEvidenceText(value))
+          if(!evidenceQuote||!orderedEvidenceMatch(documentText,evidenceQuote)||!labelSupported||!valueSupported)continue
           const dedupe=`${type}|${value}`;if(seen.has(dedupe))continue;seen.add(dedupe)
           candidates.push({type,label:spec.label,value,priority:spec.priority,source:'document',sourceLine:evidenceQuote||evidenceLinesForLabel(documentText,value,1)[0]||value})
         }
