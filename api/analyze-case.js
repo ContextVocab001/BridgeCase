@@ -235,6 +235,25 @@ function validatedCoordinateSelection(raw,contexts,caseType){
   return{caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:candidates.slice(1,4)}
 }
 
+function validatedTextLayoutSelection(raw,documentText,caseType){
+  const allowed=new Map(identifierSpecs(caseType).map(item=>[item[0],{label:item[1],priority:item[3]}]))
+  const candidates=[],seen=new Set()
+  for(const item of Array.isArray(raw?.candidates)?raw.candidates:[]){
+    const type=str(item?.type),value=str(item?.value),labelQuote=str(item?.labelQuote),valueQuote=str(item?.valueQuote),spec=allowed.get(type)
+    if(!spec||!validIdentifierValue(type,value))continue
+    if(!labelQuote||!valueQuote||!orderedEvidenceMatch(documentText,labelQuote)||!orderedEvidenceMatch(documentText,valueQuote))continue
+    const labelNormalized=normalizeEvidenceText(labelQuote),valueNormalized=normalizeEvidenceText(valueQuote)
+    if(!evidenceTokens(spec.label).every(token=>labelNormalized.includes(token)))continue
+    if(!valueNormalized.includes(normalizeEvidenceText(value)))continue
+    const dedupe=`${type}|${value}`
+    if(seen.has(dedupe))continue
+    seen.add(dedupe)
+    candidates.push({type,label:spec.label,value,priority:spec.priority,source:'document',sourceLine:`${labelQuote} -> ${valueQuote}`,evidence:{mode:'text-layout',labelQuote,valueQuote}})
+  }
+  candidates.sort((a,b)=>a.priority-b.priority)
+  return{caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:candidates.slice(1,4)}
+}
+
 function deterministicIdentifierFallback(documentText,caseType){
   const candidates=[]
   for(const context of identifierContexts(documentText,caseType)){
@@ -873,26 +892,49 @@ ${documentText}`}],900,0)
       const documentText=str(i.documentText),caseType=str(i.caseType)||'other'
       if(!documentText){res.status(400).json({error:'OCR text is required.'});return}
       const coordinateContexts=coordinateIdentifierContexts(i.ocrPages,caseType)
-      let result={caseType,candidates:[],primaryIdentifier:null,supplementaryIdentifiers:[]}
+      let result={caseType,candidates:[],primaryIdentifier:null,supplementaryIdentifiers:[]},selectionMode='none'
       if(coordinateContexts.length){
-        const identifierSystem=`Select transaction identifiers from coordinate-grounded candidates. Return JSON only.
+        const coordinateSystem=`Select transaction identifiers from coordinate-grounded candidates. Return JSON only.
 OUTPUT SHAPE:
 {"candidates":[{"type":"","candidateId":""}]}
 RULES:
 - Use only COORDINATE_CONTEXTS. Copy type and candidateId exactly.
 - Understand each form as labeled fields. Prefer same-row-right values; use same-column-below only when the layout clearly stacks labels and values.
 - Do not choose dates, amounts, room numbers, property names, cities, headings, or a value belonging to another nearby label.
-- Distinguish Folio Number, Confirmation Number, Reservation Number, Rental Agreement Number, Identification Number, Reference ID, Transaction ID, Ticket Number, PNR, Order Number, and Invoice Number by label meaning.
+- Distinguish Folio Number, Confirmation Number, Reservation Number, Identification Number, Rental Agreement Number, Reference ID, Transaction ID, Ticket Number, PNR, Order Number, and Invoice Number by label meaning.
 - A candidate's geometryScore supports proximity but does not override semantic field correspondence.
 - Return no candidate when correspondence is ambiguous.`
         try{
-          const selected=await call(key,model,[{role:'system',content:identifierSystem},{role:'user',content:`CASE_TYPE:${caseType}\nCOORDINATE_CONTEXTS:${JSON.stringify(coordinateContexts)}`}],1200,0)
+          const selected=await call(key,model,[{role:'system',content:coordinateSystem},{role:'user',content:`CASE_TYPE:${caseType}\nCOORDINATE_CONTEXTS:${JSON.stringify(coordinateContexts)}`}],1200,0)
           result=validatedCoordinateSelection(selected,coordinateContexts,caseType)
+          if(result.primaryIdentifier)selectionMode='coordinate'
         }catch(error){console.warn('Coordinate identifier pairing failed.',error)}
       }
-      // Keep only an explicit same-line fallback. Never infer across flattened OCR lines.
-      if(!result.primaryIdentifier)result=deterministicIdentifierFallback(documentText,caseType)
-      console.info('Identifier selection completed',{caseType,coordinateContextCount:coordinateContexts.length,primaryIdentifier:result.primaryIdentifier?{type:result.primaryIdentifier.type,label:result.primaryIdentifier.label,value:result.primaryIdentifier.value,evidence:result.primaryIdentifier.evidence||null}:null})
+      if(!result.primaryIdentifier){
+        const textLayoutSystem=`Understand identifier fields in the CURRENT OCR document even when coordinates are unavailable. Return JSON only.
+OUTPUT SHAPE:
+{"candidates":[{"type":"","value":"","labelQuote":"","valueQuote":""}]}
+ALLOWED TYPES AND LABELS:
+${JSON.stringify(identifierSpecs(caseType).map(item=>({type:item[0],label:item[1],priority:item[3]})))}
+RULES:
+- Use only OCR_TEXT. Never invent, repair, or guess a value.
+- Interpret the OCR as a document layout. Labels and values may be separated because a two-column card was flattened into reading order.
+- Use section headings, label order, value order, neighboring labels, and expected field meaning together.
+- Example: if a Guest Information block lists Guest Name, Confirmation Number, Folio Number and the corresponding values are JORDAN TESTER, 47281935, 815204, pair Folio Number with 815204.
+- Do not use a hotel/property name, city, state, date, amount, tax, total, payment card digits, room number, phone number, or ZIP code as a transaction identifier.
+- Prefer the case-specific identifier with the lowest supplied priority number.
+- value must be copied exactly from OCR_TEXT and contain at least one digit.
+- labelQuote must be an exact OCR excerpt containing the printed identifier label. valueQuote must be an exact OCR excerpt containing the selected value. They do not need to be contiguous with each other.
+- Return no candidate when the document does not clearly support the pairing.`
+        try{
+          const selected=await call(key,model,[{role:'system',content:textLayoutSystem},{role:'user',content:`CASE_TYPE:${caseType}\nOCR_TEXT:\n${documentText}`}],1500,0)
+          result=validatedTextLayoutSelection(selected,documentText,caseType)
+          if(result.primaryIdentifier)selectionMode='text-layout'
+        }catch(error){console.warn('Text-layout identifier pairing failed.',error)}
+      }
+      // Final fallback accepts only an explicit label and value on the same OCR line.
+      if(!result.primaryIdentifier){result=deterministicIdentifierFallback(documentText,caseType);if(result.primaryIdentifier)selectionMode='same-line'}
+      console.info('Identifier selection completed',{caseType,coordinateContextCount:coordinateContexts.length,selectionMode,primaryIdentifier:result.primaryIdentifier?{type:result.primaryIdentifier.type,label:result.primaryIdentifier.label,value:result.primaryIdentifier.value,evidence:result.primaryIdentifier.evidence||null}:null})
       res.status(200).json(result);return
     }
     if(i.mode==='translate'){
