@@ -804,8 +804,25 @@ RULES:
 - Do not draft text or decide whether the charge is valid.`
       const structured=await call(key,model,[{role:'system',content:blockSystem},{role:'user',content:`SELECTED_LABEL:\n${selectedLabel}\n\nOCCURRENCE_WINDOWS:\n${JSON.stringify(windows)}\n\nOCR_TEXT:\n${documentText}`}],2200,0)
       const blocks=validateChargeBlocks(structured,documentText,selectedLabel)
-      const aggregation=blocks.length?aggregateValidatedBlocks(documentText,selectedLabel,blocks):fallbackOccurrenceAggregation(documentText,selectedLabel)
-      if(!aggregation.lineCount){res.status(422).json({error:'No validated charge occurrences matched the selected charge label.'});return}
+      const fallbackAggregation=fallbackOccurrenceAggregation(documentText,selectedLabel)
+      const aggregation=blocks.length?aggregateValidatedBlocks(documentText,selectedLabel,blocks):fallbackAggregation
+      const documentLines=documentText.split(/\r?\n/).map((line,index)=>({lineNumber:index+1,text:line.trim()})).filter(item=>item.text)
+      const labelLineIndexes=documentLines.filter(item=>normalizeOcrText(item.text).includes(normalizeOcrText(selectedLabel))).map(item=>item.lineNumber)
+      const diagnosticLines=documentLines.filter(item=>labelLineIndexes.some(lineNumber=>Math.abs(item.lineNumber-lineNumber)<=4)||/[$€£¥]\s*\d|\b(?:USD|EUR|GBP|JPY)\b|\d+\.\d{2}|\d+(?:\.\d+)?%/.test(item.text)).slice(0,80)
+      console.info('Charge aggregation diagnostics',{
+        selectedLabel,
+        occurrenceWindows:windows,
+        aiBlocks:Array.isArray(structured?.blocks)?structured.blocks:[],
+        validatedBlocks:blocks,
+        fallbackAggregation,
+        finalAggregation:aggregation,
+        labelLineIndexes,
+        diagnosticLines
+      })
+      if(!aggregation.lineCount){
+        console.warn('Charge aggregation produced no validated occurrences',{selectedLabel,labelLineIndexes,diagnosticLines,occurrenceWindows:windows,aiBlocks:Array.isArray(structured?.blocks)?structured.blocks:[]})
+        res.status(422).json({error:'No validated charge occurrences matched the selected charge label.'});return
+      }
       res.status(200).json(aggregation);return
     }
     if(i.mode==='extract-case-context'){
