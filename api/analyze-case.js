@@ -169,6 +169,52 @@ function identifierContexts(documentText,caseType){
   }
   return contexts
 }
+function normalizedDetection(raw,page,index){
+  const text=str(raw?.text),x1=Number(raw?.x1),y1=Number(raw?.y1),x2=Number(raw?.x2),y2=Number(raw?.y2)
+  if(!text||![x1,y1,x2,y2].every(Number.isFinite))return null
+  return{id:`p${page}-d${index}`,page,text,x1,y1,x2,y2,cx:(x1+x2)/2,cy:(y1+y2)/2,width:Math.max(1,x2-x1),height:Math.max(1,y2-y1)}
+}
+function coordinateIdentifierContexts(ocrPages,caseType){
+  const pages=Array.isArray(ocrPages)?ocrPages:[],contexts=[]
+  for(const pageRaw of pages){
+    const page=Number(pageRaw?.page)||1
+    const detections=(Array.isArray(pageRaw?.detections)?pageRaw.detections:[]).map((item,index)=>normalizedDetection(item,page,index)).filter(Boolean)
+    if(!detections.length)continue
+    const heights=detections.map(item=>item.height).sort((a,b)=>a-b),median=heights[Math.floor(heights.length/2)]||10,rowTolerance=Math.max(4,median*.8)
+    for(const [type,label,pattern,priority] of identifierSpecs(caseType)){
+      for(const anchor of detections.filter(item=>pattern.test(item.text))){
+        const candidates=[]
+        for(const item of detections){
+          if(item.id===anchor.id||!validIdentifierValue(type,item.text))continue
+          const dy=Math.abs(item.cy-anchor.cy),rightGap=item.x1-anchor.x2,sameRow=dy<=rowTolerance,rightOf=rightGap>=-2
+          const belowGap=item.y1-anchor.y2,sameColumn=Math.abs(item.cx-anchor.cx)<=Math.max(anchor.width,item.width)*1.2
+          const nearBelow=belowGap>=-2&&belowGap<=rowTolerance*4&&sameColumn
+          if(!((sameRow&&rightOf)||nearBelow))continue
+          const relation=sameRow&&rightOf?'same-row-right':'same-column-below'
+          const geometryScore=(relation==='same-row-right'?100:70)-Math.min(50,dy*2)-Math.min(30,Math.max(0,rightGap)/20)
+          candidates.push({candidateId:item.id,value:item.text,relation,geometryScore:Math.round(geometryScore),box:{x1:item.x1,y1:item.y1,x2:item.x2,y2:item.y2},labelBox:{x1:anchor.x1,y1:anchor.y1,x2:anchor.x2,y2:anchor.y2}})
+        }
+        contexts.push({type,label,priority,page,labelText:anchor.text,labelBox:{x1:anchor.x1,y1:anchor.y1,x2:anchor.x2,y2:anchor.y2},candidates:candidates.sort((a,b)=>b.geometryScore-a.geometryScore).slice(0,8)})
+      }
+    }
+  }
+  return contexts.filter(context=>context.candidates.length)
+}
+function validatedCoordinateSelection(raw,contexts,caseType){
+  const allowed=new Map()
+  for(const context of contexts)for(const candidate of context.candidates)allowed.set(`${context.type}|${candidate.candidateId}`,{context,candidate})
+  const candidates=[],seen=new Set()
+  for(const item of Array.isArray(raw?.candidates)?raw.candidates:[]){
+    const key=`${str(item?.type)}|${str(item?.candidateId)}`,match=allowed.get(key)
+    if(!match)continue
+    const{context,candidate}=match,dedupe=`${context.type}|${candidate.value}`
+    if(seen.has(dedupe)||candidate.geometryScore<25)continue
+    seen.add(dedupe);candidates.push({type:context.type,label:context.label,value:candidate.value,priority:context.priority,source:'document',sourceLine:`${context.labelText} -> ${candidate.value}`,evidence:{page:context.page,relation:candidate.relation,geometryScore:candidate.geometryScore,labelBox:context.labelBox,valueBox:candidate.box}})
+  }
+  candidates.sort((a,b)=>a.priority-b.priority)
+  return{caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:candidates.slice(1,4)}
+}
+
 function deterministicIdentifierFallback(documentText,caseType){
   const candidates=[]
   for(const context of identifierContexts(documentText,caseType)){
@@ -806,43 +852,27 @@ ${documentText}`}],900,0)
     if(i.mode==='select-primary-identifier'){
       const documentText=str(i.documentText),caseType=str(i.caseType)||'other'
       if(!documentText){res.status(400).json({error:'OCR text is required.'});return}
-      const contexts=identifierContexts(documentText,caseType)
-      const identifierSystem=`Select transaction identifiers by understanding label-value pairs in the CURRENT document layout. Return JSON only.
+      const coordinateContexts=coordinateIdentifierContexts(i.ocrPages,caseType)
+      let result={caseType,candidates:[],primaryIdentifier:null,supplementaryIdentifiers:[]}
+      if(coordinateContexts.length){
+        const identifierSystem=`Select transaction identifiers from coordinate-grounded candidates. Return JSON only.
 OUTPUT SHAPE:
-{"candidates":[{"type":"","label":"","value":"","priority":1,"evidenceQuote":""}]}
+{"candidates":[{"type":"","candidateId":""}]}
 RULES:
-- Use only IDENTIFIER_CONTEXTS and OCR_TEXT.
-- Understand the document as a visual information block, not as a flat next-token sequence. Labels may be listed first and their values may appear on later lines in the same card or column.
-- For each context, pair the printed label with the value that occupies the corresponding semantic row in that local block. Use label order, neighboring labels, value order, expected value type, and the whole block together.
-- Example pattern: if a Guest Information block lists Guest Name, Confirmation Number, Folio Number and later lists JORDAN TESTER, 47281935, 815204 in corresponding order, pair Folio Number with 815204. Do not pair Folio Number with a hotel name, city, state, date, room number, amount, heading, or unrelated nearby column.
-- valueCandidates are only possible values found near the label. Select among them by semantic correspondence; proximity alone is not sufficient.
-- Preserve the exact identifier label and value. Folio Number must remain Folio Number.
-- Folio, confirmation, reservation, agreement, ticket, order, invoice, transaction and reference identifiers must contain at least one digit.
-- evidenceQuote must be an exact contiguous OCR excerpt containing the label and selected value. It may span multiple lines when the label and value are separated by the document layout.
-- Use the supplied type, label and priority from IDENTIFIER_CONTEXTS. Do not invent an identifier type.
-- Return no candidate when the local block does not support a clear pairing.`
-      let result
-      try{
-        const chosen=await call(key,model,[{role:'system',content:identifierSystem},{role:'user',content:`CASE_TYPE:${caseType}
-IDENTIFIER_CONTEXTS:${JSON.stringify(contexts)}
-OCR_TEXT:
-${documentText}`}],1200,0)
-        const allowed=new Map(identifierSpecs(caseType).map(item=>[item[0],{label:item[1],priority:item[3]}]))
-        const seen=new Set(),candidates=[]
-        for(const item of Array.isArray(chosen?.candidates)?chosen.candidates:[]){
-          const type=str(item?.type),value=str(item?.value),evidenceQuote=str(item?.evidenceQuote),spec=allowed.get(type)
-          if(!spec||!validIdentifierValue(type,value)||!orderedEvidenceMatch(documentText,value))continue
-          const evidenceNormalized=normalizeEvidenceText(evidenceQuote)
-          const labelSupported=evidenceNormalized&&evidenceTokens(spec.label).every(token=>evidenceNormalized.includes(token))
-          const valueSupported=evidenceNormalized.includes(normalizeEvidenceText(value))
-          if(!evidenceQuote||!orderedEvidenceMatch(documentText,evidenceQuote)||!labelSupported||!valueSupported)continue
-          const dedupe=`${type}|${value}`;if(seen.has(dedupe))continue;seen.add(dedupe)
-          candidates.push({type,label:spec.label,value,priority:spec.priority,source:'document',sourceLine:evidenceQuote||evidenceLinesForLabel(documentText,value,1)[0]||value})
-        }
-        candidates.sort((a,b)=>a.priority-b.priority)
-        result={caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:candidates.slice(1,4)}
-      }catch(error){console.warn('AI identifier pairing failed; using strict same-line fallback.',error);result=deterministicIdentifierFallback(documentText,caseType)}
+- Use only COORDINATE_CONTEXTS. Copy type and candidateId exactly.
+- Understand each form as labeled fields. Prefer same-row-right values; use same-column-below only when the layout clearly stacks labels and values.
+- Do not choose dates, amounts, room numbers, property names, cities, headings, or a value belonging to another nearby label.
+- Distinguish Folio Number, Confirmation Number, Reservation Number, Rental Agreement Number, Reference ID, Transaction ID, Ticket Number, PNR, Order Number, and Invoice Number by label meaning.
+- A candidate's geometryScore supports proximity but does not override semantic field correspondence.
+- Return no candidate when correspondence is ambiguous.`
+        try{
+          const selected=await call(key,model,[{role:'system',content:identifierSystem},{role:'user',content:`CASE_TYPE:${caseType}\nCOORDINATE_CONTEXTS:${JSON.stringify(coordinateContexts)}`}],1200,0)
+          result=validatedCoordinateSelection(selected,coordinateContexts,caseType)
+        }catch(error){console.warn('Coordinate identifier pairing failed.',error)}
+      }
+      // Keep only an explicit same-line fallback. Never infer across flattened OCR lines.
       if(!result.primaryIdentifier)result=deterministicIdentifierFallback(documentText,caseType)
+      console.info('Identifier selection completed',{caseType,coordinateContextCount:coordinateContexts.length,primaryIdentifier:result.primaryIdentifier?{type:result.primaryIdentifier.type,label:result.primaryIdentifier.label,value:result.primaryIdentifier.value,evidence:result.primaryIdentifier.evidence||null}:null})
       res.status(200).json(result);return
     }
     if(i.mode==='translate'){

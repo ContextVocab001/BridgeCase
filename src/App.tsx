@@ -288,11 +288,11 @@ function App() {
       const msgTexts = await Promise.all(messageFiles.filter((file) => file.name.toLowerCase().endsWith('.msg') || file.type === 'application/vnd.ms-outlook').map(parseMsg))
       const messageImages = await filesToOcrImages(messageFiles.filter((file) => !/\.(eml|msg)$/i.test(file.name) && file.type !== 'application/vnd.ms-outlook'))
       const documentImages = await filesToOcrImages(files)
-      const [messageOcr, documentOcr] = await Promise.all([messageImages.length ? runOcr(messageImages) : Promise.resolve({ text: '', pages: [] }), documentImages.length ? runOcr(documentImages) : Promise.resolve({ text: '', pages: [] })])
+      const [messageOcr, documentOcr] = await Promise.all([messageImages.length ? runOcr(messageImages) : Promise.resolve({ text: '', pages: [] as import('./api/caseAnalysis').OcrPage[] }), documentImages.length ? runOcr(documentImages) : Promise.resolve({ text: '', pages: [] as import('./api/caseAnalysis').OcrPage[] })])
       const originalMessage = [message, ...emlTexts, ...msgTexts, messageOcr.text].filter(Boolean).join('\n\n--- MESSAGE SOURCE ---\n\n')
       const documents: UploadedSource[] = files.map((file) => ({ name: file.name, type: file.type, size: file.size }))
       if (documentOcr.text.trim()) {
-        const preparation = await prepareStructuredCase({ interfaceLanguage:language, draftLanguage:language, userText:request, documentText:documentOcr.text })
+        const preparation = await prepareStructuredCase({ interfaceLanguage:language, draftLanguage:language, userText:request, documentText:documentOcr.text, ocrPages:documentOcr.pages })
         const baseReviewData = buildCaseReviewData(preparation)
         const reviewData = await resolveDeepContactRoutes(baseReviewData)
         setAnalysis(null)

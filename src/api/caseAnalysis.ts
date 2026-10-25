@@ -2,7 +2,8 @@ import type { LanguageCode } from '../config/languages'
 import type { CaseContext, CasePreparation, CaseReviewData, CaseType, CaseTypeClassification, ChargeAggregation, ChargeLabelSelection, IdentifierSelection, UserInputStructure } from '../types/workflow'
 export type AppLanguage = 'en' | 'ja' | 'es'
 export type UploadedSource = { name: string; type: string; size: number; text?: string }
-export type OcrPage = { page: number; text: string; lines: string[] }
+export type OcrDetection = { text:string; x1:number; y1:number; x2:number; y2:number }
+export type OcrPage = { page:number; text:string; lines:string[]; detections:OcrDetection[] }
 export type OcrResult = { text: string; pages: OcrPage[] }
 export type CaseFact = { label: string; value: string; source?: 'document' | 'message' | 'user' }
 export type MissingField = { key: string; label: string; reason: string; alternatives?: string[] }
@@ -43,6 +44,7 @@ export type SelectPrimaryIdentifierInput = {
   interfaceLanguage: LanguageCode
   caseType: CaseType
   documentText: string
+  ocrPages?: OcrPage[]
 }
 
 export type ClassifyCaseTypeInput = {
@@ -62,8 +64,9 @@ export type PrepareCaseInput = {
   draftLanguage: LanguageCode
   userText: string
   documentText: string
+  ocrPages?: OcrPage[]
 }
-export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier' | 'generate-protected-draft'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string>; review?: DraftCaseReviewData; currentSubject?: string; currentBody?: string }
+export type AnalyzeCaseInput = { mode?: 'analyze' | 'translate' | 'structure-user-input' | 'select-charge-label' | 'aggregate-selected-charge' | 'extract-case-context' | 'classify-case-type' | 'select-primary-identifier' | 'generate-protected-draft'; originalMessage: string; userRequest: string; interfaceLanguage: LanguageCode; recipientLanguage: LanguageCode; documents: UploadedSource[]; documentText?: string; ocrPages?: OcrPage[]; approvedSubject?: string; approvedBody?: string; additionalInformation?: Record<string,string>; review?: DraftCaseReviewData; currentSubject?: string; currentBody?: string }
 
 async function readJson(response: Response) {
   const raw = await response.text()
@@ -90,14 +93,14 @@ export async function selectChargeLabel(input: SelectChargeLabelInput): Promise<
 export async function aggregateSelectedCharge(input: AggregateSelectedChargeInput): Promise<ChargeAggregation> { return post({...input,mode:'aggregate-selected-charge',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
 export async function classifyCaseType(input: ClassifyCaseTypeInput): Promise<CaseTypeClassification> { return post({...input,mode:'classify-case-type',originalMessage:'',userRequest:input.userStructure.originalText,recipientLanguage:input.interfaceLanguage,documents:[]}) }
 export async function extractCaseContext(input: ExtractCaseContextInput): Promise<CaseContext> { return post({...input,mode:'extract-case-context',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
-export async function selectPrimaryIdentifier(input: SelectPrimaryIdentifierInput): Promise<IdentifierSelection> { return post({...input,mode:'select-primary-identifier',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[]}) }
+export async function selectPrimaryIdentifier(input: SelectPrimaryIdentifierInput): Promise<IdentifierSelection> { return post({...input,mode:'select-primary-identifier',originalMessage:'',userRequest:'',recipientLanguage:input.interfaceLanguage,documents:[],ocrPages:input.ocrPages}) }
 export async function prepareStructuredCase(input: PrepareCaseInput): Promise<CasePreparation> {
   const userStructure = await structureUserInput({ userText:input.userText, interfaceLanguage:input.interfaceLanguage, draftLanguage:input.draftLanguage })
   const caseClassification = await classifyCaseType({ interfaceLanguage:input.interfaceLanguage, userStructure, documentText:input.documentText })
   const caseContext = await extractCaseContext({ interfaceLanguage:input.interfaceLanguage, caseType:caseClassification.caseType, documentText:input.documentText })
   const chargeSelection = await selectChargeLabel({ interfaceLanguage:input.interfaceLanguage, userStructure, documentText:input.documentText })
   const chargeAggregation = chargeSelection.selectedLabel ? await aggregateSelectedCharge({ interfaceLanguage:input.interfaceLanguage, selectedLabel:chargeSelection.selectedLabel, documentText:input.documentText }) : null
-  const identifierSelection = await selectPrimaryIdentifier({ interfaceLanguage:input.interfaceLanguage, caseType:caseClassification.caseType, documentText:input.documentText })
+  const identifierSelection = await selectPrimaryIdentifier({ interfaceLanguage:input.interfaceLanguage, caseType:caseClassification.caseType, documentText:input.documentText, ocrPages:input.ocrPages })
   return { userStructure, caseClassification, caseContext, chargeSelection, chargeAggregation, identifierSelection, documentText:input.documentText }
 }
 
@@ -173,7 +176,11 @@ export async function runOcr(images:string[]):Promise<OcrResult> {
     const value = page && typeof page === 'object' ? page as Record<string, unknown> : {}
     const text = typeof value.text === 'string' ? value.text : ''
     const lines = Array.isArray(value.lines) ? value.lines.filter((line): line is string => typeof line === 'string' && Boolean(line.trim())) : text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-    return { page:typeof value.page === 'number' ? value.page : index + 1, text, lines }
+    const detections = Array.isArray(value.detections) ? value.detections.map(item => {
+      const detection = item && typeof item === 'object' ? item as Record<string,unknown> : {}
+      return { text:typeof detection.text==='string'?detection.text:'', x1:Number(detection.x1), y1:Number(detection.y1), x2:Number(detection.x2), y2:Number(detection.y2) }
+    }).filter(item => item.text && [item.x1,item.y1,item.x2,item.y2].every(Number.isFinite)) : []
+    return { page:typeof value.page === 'number' ? value.page : index + 1, text, lines, detections }
   })
   return { text:payload.text, pages }
 }
