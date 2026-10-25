@@ -135,13 +135,13 @@ function aggregateValidatedBlocks(documentText,selectedLabel,blocks){
   return{selectedLabel:str(selectedLabel),currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:blocks.reduce((sum,block)=>sum+block.quantity,0),totalAmount:Math.round(blocks.reduce((sum,block)=>sum+block.effectiveAmount,0)*100)/100,amountGroups:[...grouped.values()],evidenceLines}
 }
 const IDENTIFIER_SPECS={
-  hotel:[['FOLIO_NUMBER','Folio Number',/folio\s*(?:number|no\.?|#)?/i,1],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,2],['RESERVATION_NUMBER','Reservation Number',/reservation\s*(?:number|no\.?|#|id)?/i,3],['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,4]],
+  hotel:[['FOLIO_NUMBER','Folio Number',/folio\s*(?:number|no\.?|#)?/i,1],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,2],['RESERVATION_NUMBER','Reservation Number',/reservation\s*(?:number|no\.?|#|id)?/i,3],['IDENTIFICATION_NUMBER','Identification Number',/identification\s*(?:id|number|no\.?|#)?/i,4],['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,5]],
   'rental-car':[['RENTAL_AGREEMENT_NUMBER','Rental Agreement Number',/(?:rental\s+agreement|rental\s+record|agreement)\s*(?:number|no\.?|#)?/i,1],['RESERVATION_NUMBER','Reservation Number',/reservation\s*(?:number|no\.?|#|id)?/i,2],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,3],['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,4]],
   airline:[['TICKET_NUMBER','Ticket Number',/ticket\s*(?:number|no\.?|#)?/i,1],['PNR','PNR',/(?:pnr|booking\s+reference)/i,2],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,3]],
   retail:[['ORDER_NUMBER','Order Number',/order\s*(?:number|no\.?|#|id)?/i,1],['INVOICE_NUMBER','Invoice Number',/invoice\s*(?:number|no\.?|#|id)?/i,2],['TRANSACTION_ID','Transaction ID',/transaction\s*(?:id|number|no\.?|#)/i,3],['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,4]],
   payment:[['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,1],['TRANSACTION_ID','Transaction ID',/transaction\s*(?:id|number|no\.?|#)/i,2],['RECEIPT_NUMBER','Receipt Number',/receipt\s*(?:number|no\.?|#|id)?/i,3]]
 }
-const GENERIC_IDENTIFIER_SPECS=[['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,50],['TRANSACTION_ID','Transaction ID',/transaction\s*(?:id|number|no\.?|#)/i,51],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,52]]
+const GENERIC_IDENTIFIER_SPECS=[['IDENTIFICATION_NUMBER','Identification Number',/identification\s*(?:id|number|no\.?|#)?/i,49],['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,50],['TRANSACTION_ID','Transaction ID',/transaction\s*(?:id|number|no\.?|#)/i,51],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,52]]
 function identifierSpecs(caseType){return[...(IDENTIFIER_SPECS[caseType]||[]),...GENERIC_IDENTIFIER_SPECS]}
 function validIdentifierValue(type,value){
   const cleanValue=str(value).replace(/^[#:\-\s]+|[#:\-\s]+$/g,'')
@@ -174,18 +174,38 @@ function normalizedDetection(raw,page,index){
   if(!text||![x1,y1,x2,y2].every(Number.isFinite))return null
   return{id:`p${page}-d${index}`,page,text,x1,y1,x2,y2,cx:(x1+x2)/2,cy:(y1+y2)/2,width:Math.max(1,x2-x1),height:Math.max(1,y2-y1)}
 }
+function detectionRows(detections){
+  if(!detections.length)return[]
+  const heights=detections.map(item=>item.height).sort((a,b)=>a-b),median=heights[Math.floor(heights.length/2)]||10,tolerance=Math.max(4,median*.8),rows=[]
+  for(const item of [...detections].sort((a,b)=>a.cy-b.cy||a.x1-b.x1)){
+    let row=rows.find(candidate=>Math.abs(candidate.cy-item.cy)<=tolerance)
+    if(!row){row={cy:item.cy,items:[]};rows.push(row)}
+    row.items.push(item);row.cy=row.items.reduce((sum,current)=>sum+current.cy,0)/row.items.length
+  }
+  return rows.map(row=>{
+    const items=row.items.sort((a,b)=>a.x1-b.x1),phrases=[]
+    for(let start=0;start<items.length;start++)for(let end=start;end<Math.min(items.length,start+4);end++){
+      const slice=items.slice(start,end+1),gaps=slice.slice(1).map((item,index)=>item.x1-slice[index].x2)
+      if(gaps.some(gap=>gap>Math.max(35,median*3)))break
+      phrases.push({id:slice.map(item=>item.id).join('+'),page:slice[0].page,text:slice.map(item=>item.text).join(' '),x1:slice[0].x1,y1:Math.min(...slice.map(item=>item.y1)),x2:slice[slice.length-1].x2,y2:Math.max(...slice.map(item=>item.y2)),cx:(slice[0].x1+slice[slice.length-1].x2)/2,cy:slice.reduce((sum,item)=>sum+item.cy,0)/slice.length,width:Math.max(1,slice[slice.length-1].x2-slice[0].x1),height:Math.max(...slice.map(item=>item.y2))-Math.min(...slice.map(item=>item.y1)),memberIds:new Set(slice.map(item=>item.id))})
+    }
+    return{...row,items,phrases}
+  })
+}
 function coordinateIdentifierContexts(ocrPages,caseType){
   const pages=Array.isArray(ocrPages)?ocrPages:[],contexts=[]
   for(const pageRaw of pages){
     const page=Number(pageRaw?.page)||1
     const detections=(Array.isArray(pageRaw?.detections)?pageRaw.detections:[]).map((item,index)=>normalizedDetection(item,page,index)).filter(Boolean)
     if(!detections.length)continue
-    const heights=detections.map(item=>item.height).sort((a,b)=>a-b),median=heights[Math.floor(heights.length/2)]||10,rowTolerance=Math.max(4,median*.8)
+    const rows=detectionRows(detections),heights=detections.map(item=>item.height).sort((a,b)=>a-b),median=heights[Math.floor(heights.length/2)]||10,rowTolerance=Math.max(4,median*.8)
     for(const [type,label,pattern,priority] of identifierSpecs(caseType)){
-      for(const anchor of detections.filter(item=>pattern.test(item.text))){
-        const candidates=[]
+      for(const row of rows){
+        const anchors=row.phrases.filter(phrase=>pattern.test(phrase.text)).sort((a,b)=>b.text.length-a.text.length)
+        if(!anchors.length)continue
+        const anchor=anchors[0],candidates=[]
         for(const item of detections){
-          if(item.id===anchor.id||!validIdentifierValue(type,item.text))continue
+          if(anchor.memberIds.has(item.id)||!validIdentifierValue(type,item.text))continue
           const dy=Math.abs(item.cy-anchor.cy),rightGap=item.x1-anchor.x2,sameRow=dy<=rowTolerance,rightOf=rightGap>=-2
           const belowGap=item.y1-anchor.y2,sameColumn=Math.abs(item.cx-anchor.cx)<=Math.max(anchor.width,item.width)*1.2
           const nearBelow=belowGap>=-2&&belowGap<=rowTolerance*4&&sameColumn
@@ -862,7 +882,7 @@ RULES:
 - Use only COORDINATE_CONTEXTS. Copy type and candidateId exactly.
 - Understand each form as labeled fields. Prefer same-row-right values; use same-column-below only when the layout clearly stacks labels and values.
 - Do not choose dates, amounts, room numbers, property names, cities, headings, or a value belonging to another nearby label.
-- Distinguish Folio Number, Confirmation Number, Reservation Number, Rental Agreement Number, Reference ID, Transaction ID, Ticket Number, PNR, Order Number, and Invoice Number by label meaning.
+- Distinguish Folio Number, Confirmation Number, Reservation Number, Rental Agreement Number, Identification Number, Reference ID, Transaction ID, Ticket Number, PNR, Order Number, and Invoice Number by label meaning.
 - A candidate's geometryScore supports proximity but does not override semantic field correspondence.
 - Return no candidate when correspondence is ambiguous.`
         try{
