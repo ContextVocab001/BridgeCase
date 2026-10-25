@@ -174,9 +174,9 @@ function deterministicIdentifierFallback(documentText,caseType){
   for(const context of identifierContexts(documentText,caseType)){
     const spec=identifierSpecs(caseType).find(item=>item[0]===context.type&&item[1]===context.label)
     if(!spec)continue
-    const tail=context.line.replace(spec[2],' ').replace(/^\s*[:#-]?\s*/,'').trim()
+    const tail=str(context.labelLine).replace(spec[2],' ').replace(/^\s*[:#-]?\s*/,'').trim()
     const value=(tail.match(/\b[A-Z0-9][A-Z0-9-]{2,39}\b/i)||[])[0]||''
-    if(validIdentifierValue(context.type,value))candidates.push({type:context.type,label:context.label,value,priority:context.priority,source:'document',sourceLine:context.line})
+    if(validIdentifierValue(context.type,value))candidates.push({type:context.type,label:context.label,value,priority:context.priority,source:'document',sourceLine:context.labelLine})
   }
   const unique=[...new Map(candidates.map(item=>[`${item.type}|${item.value}`,item])).values()].sort((a,b)=>a.priority-b.priority)
   return{caseType,candidates:unique,primaryIdentifier:unique[0]||null,supplementaryIdentifiers:unique.slice(1,4)}
