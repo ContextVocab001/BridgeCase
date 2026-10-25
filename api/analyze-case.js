@@ -358,12 +358,14 @@ function normalizeChargeAggregation(value){
     subtotal:Number(group?.subtotal)
   })).filter(group=>Number.isFinite(group.unitAmount)&&Number.isFinite(group.count)&&Number.isFinite(group.subtotal)):[]
   const totalAmount=Number(value.totalAmount)
+  const amountStatus=str(value.amountStatus)==='unverified'?'unverified':'verified'
   return{
-    selectedLabel:str(value.selectedLabel),currencyCode,currencySymbol,
+    selectedLabel:str(value.selectedLabel),amountStatus,currencyCode,currencySymbol,
     lineCount:Number(value.lineCount)||0,
-    totalAmount:Number.isFinite(totalAmount)?totalAmount:undefined,
-    amountGroups,
-    evidenceLines:arr(value.evidenceLines)
+    totalAmount:amountStatus==='verified'&&Number.isFinite(totalAmount)?totalAmount:undefined,
+    amountGroups:amountStatus==='verified'?amountGroups:[],
+    evidenceLines:arr(value.evidenceLines),
+    warning:str(value.warning)
   }
 }
 function protectedDraftData(review){
@@ -804,26 +806,21 @@ RULES:
 - Do not draft text or decide whether the charge is valid.`
       const structured=await call(key,model,[{role:'system',content:blockSystem},{role:'user',content:`SELECTED_LABEL:\n${selectedLabel}\n\nOCCURRENCE_WINDOWS:\n${JSON.stringify(windows)}\n\nOCR_TEXT:\n${documentText}`}],2200,0)
       const blocks=validateChargeBlocks(structured,documentText,selectedLabel)
-      const fallbackAggregation=fallbackOccurrenceAggregation(documentText,selectedLabel)
-      const aggregation=blocks.length?aggregateValidatedBlocks(documentText,selectedLabel,blocks):fallbackAggregation
-      const documentLines=documentText.split(/\r?\n/).map((line,index)=>({lineNumber:index+1,text:line.trim()})).filter(item=>item.text)
-      const labelLineIndexes=documentLines.filter(item=>normalizeOcrText(item.text).includes(normalizeOcrText(selectedLabel))).map(item=>item.lineNumber)
-      const diagnosticLines=documentLines.filter(item=>labelLineIndexes.some(lineNumber=>Math.abs(item.lineNumber-lineNumber)<=4)||/[$€£¥]\s*\d|\b(?:USD|EUR|GBP|JPY)\b|\d+\.\d{2}|\d+(?:\.\d+)?%/.test(item.text)).slice(0,80)
-      console.info('Charge aggregation diagnostics',{
-        selectedLabel,
-        occurrenceWindows:windows,
-        aiBlocks:Array.isArray(structured?.blocks)?structured.blocks:[],
-        validatedBlocks:blocks,
-        fallbackAggregation,
-        finalAggregation:aggregation,
-        labelLineIndexes,
-        diagnosticLines
-      })
+      const aggregation=blocks.length?aggregateValidatedBlocks(documentText,selectedLabel,blocks):fallbackOccurrenceAggregation(documentText,selectedLabel)
       if(!aggregation.lineCount){
-        console.warn('Charge aggregation produced no validated occurrences',{selectedLabel,labelLineIndexes,diagnosticLines,occurrenceWindows:windows,aiBlocks:Array.isArray(structured?.blocks)?structured.blocks:[]})
-        res.status(422).json({error:'No validated charge occurrences matched the selected charge label.'});return
+        console.warn('Charge amount could not be verified; continuing without an amount.',{selectedLabel})
+        res.status(200).json({
+          selectedLabel,
+          amountStatus:'unverified',
+          currencyCode:'',
+          currencySymbol:'',
+          lineCount:0,
+          amountGroups:[],
+          evidenceLines:evidenceLinesForLabel(documentText,selectedLabel,3),
+          warning:'The disputed item was found, but its amount could not be verified from the OCR text.'
+        });return
       }
-      res.status(200).json(aggregation);return
+      res.status(200).json({...aggregation,amountStatus:'verified'});return
     }
     if(i.mode==='extract-case-context'){
       const documentText=str(i.documentText),caseType=str(i.caseType)||'other'

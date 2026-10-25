@@ -159,7 +159,7 @@ export function buildCaseReviewData(preparation: CasePreparation): DraftCaseRevi
     userOriginalText:preparation.userStructure.originalText,
     chargeAggregation:aggregation,
     contactCandidates:buildContactCandidates(preparation),
-    requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.totalAmount, currency:aggregation?.currencyCode },
+    requestedOutcome:{ code:preparation.userStructure.requestedAction.code, statement:preparation.userStructure.requestedAction.statement, amount:aggregation?.amountStatus==='verified'?aggregation.totalAmount:undefined, currency:aggregation?.amountStatus==='verified'?aggregation.currencyCode:undefined },
     primaryIdentifier:primary,
     readiness:{ ready:Boolean((preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length)&&preparation.userStructure.requestedAction.statement), hasOrganization:Boolean(preparation.caseContext.organizationName), hasGuestName:Boolean(preparation.caseContext.guestName), hasIssue:Boolean(preparation.chargeSelection.selectedLabel||preparation.userStructure.claims.length), hasOutcome:Boolean(preparation.userStructure.requestedAction.statement), hasPrimaryIdentifier:Boolean(primary) }
   }
