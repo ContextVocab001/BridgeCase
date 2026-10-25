@@ -161,7 +161,7 @@ export type ContactRouteCandidate = {
   label: string
   url: string
   kind: 'source-page' | 'official-page' | 'search'
-  purpose: 'case-contact' | 'location-page' | 'general-support' | 'source-page'
+  purpose: 'case-contact' | 'billing-form' | 'contact-form' | 'official-email' | 'billing-guide' | 'location-page' | 'phone-contact-page' | 'general-support' | 'source-page'
   searchEntity: string
   locationName?: string
   recommended?: boolean

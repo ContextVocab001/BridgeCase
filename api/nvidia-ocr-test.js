@@ -154,7 +154,8 @@ export default async function handler(request, response) {
       const layoutText = buildLayoutText(detections)
       const fallbackText = collectFallbackText(payload).join('\n')
       const text = layoutText || fallbackText
-      pages.push({ page:index + 1, text, detections })
+      const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+      pages.push({ page:index + 1, text, lines, detections })
     }
 
     const text = pages.map(page => page.text).filter(Boolean).join('\n\n--- PAGE ---\n\n')

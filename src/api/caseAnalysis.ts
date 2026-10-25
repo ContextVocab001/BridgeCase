@@ -121,30 +121,22 @@ function buildContactCandidates(preparation: CasePreparation) {
   const context = preparation.caseContext
   const entity = (context.contactSearchName || context.organizationName).trim()
   const location = context.locationName.trim()
-  const candidates: CaseReviewData['contactCandidates'] = []
-  for (const url of sourceUrls(preparation.documentText).slice(0, 2)) {
-    candidates.push({ label:url, url, kind:'source-page', purpose:'source-page', searchEntity:entity || url, locationName:location || undefined })
-  }
-  if (!entity) return candidates
+  const sourceCandidates: CaseReviewData['contactCandidates'] = sourceUrls(preparation.documentText).slice(0, 2).map(url => ({
+    label:url, url, kind:'source-page', purpose:'source-page', searchEntity:entity || url, locationName:location || undefined
+  }))
+  if (!entity) return sourceCandidates
   const located = [entity, location].filter(Boolean).join(' ')
-  candidates.push({
+  // One fallback only. /api/search-contact-routes replaces this after it reads and classifies current official pages.
+  return [...sourceCandidates, {
     label:located,
     url:googleSearch(`${located} official ${contactCaseWords(preparation.caseClassification.caseType)}`),
-    kind:'search', purpose:'case-contact', searchEntity:entity, locationName:location || undefined, recommended:true
-  })
-  if (location) candidates.push({
-    label:located,
-    url:googleSearch(`${located} official location page`),
-    kind:'search', purpose:'location-page', searchEntity:entity, locationName:location
-  })
-  candidates.push({
-    label:entity,
-    url:googleSearch(`${entity} official customer relations billing support`),
-    kind:'search', purpose:'general-support', searchEntity:entity
-  })
-  return candidates.slice(0, 4)
+    kind:'search' as const,
+    purpose:'case-contact' as const,
+    searchEntity:entity,
+    locationName:location || undefined,
+    recommended:true
+  }].slice(0, 3)
 }
-
 export function buildCaseReviewData(preparation: CasePreparation): DraftCaseReviewData {
   const confirmedFacts: CaseReviewData['confirmedFacts'] = []
   if (preparation.caseContext.guestName) confirmedFacts.push({ key:'guestName', label:'Guest name', value:preparation.caseContext.guestName, source:'document' })

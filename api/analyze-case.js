@@ -58,38 +58,72 @@ function evidenceLinesForLabel(documentText,label,limit=5){
   if(!normalizedLabel)return[]
   return str(documentText).split('\n').map(line=>line.replace(/\r$/,'').trim()).filter(Boolean).filter(line=>normalizeEvidenceText(line).includes(normalizedLabel)||orderedEvidenceMatch(line,label)).slice(0,limit)
 }
-function allOccurrences(text,needle){const result=[];let from=0;while(needle&&from<text.length){const index=text.indexOf(needle,from);if(index<0)break;result.push(index);from=index+Math.max(1,needle.length)}return result}
+function documentSectionForLine(line,current='other'){
+  const value=normalizeOcrText(line)
+  if(/account activity|itemized charges|transaction details|charge details|date description amount/.test(value))return'detail'
+  if(/summary|charge summary|totals?/.test(value))return'summary'
+  if(/payment information|payment method|paid in full/.test(value))return'payment'
+  if(/balance due|grand total|total charges/.test(value))return current==='detail'?'detail-total':'summary'
+  return current
+}
 function chargeOccurrenceWindows(documentText,selectedLabel){
-  const normalizedText=normalizeOcrText(documentText),normalizedLabel=normalizeOcrText(selectedLabel),positions=allOccurrences(normalizedText,normalizedLabel)
-  return positions.map((position,index)=>{
-    const next=positions[index+1]??Math.min(normalizedText.length,position+420)
-    const previous=index?positions[index-1]+normalizedLabel.length:Math.max(0,position-120)
-    const start=Math.max(previous,position-120),end=Math.min(normalizedText.length,Math.max(position+normalizedLabel.length+180,next))
-    return{occurrence:index+1,text:normalizedText.slice(start,end)}
+  const lines=str(documentText).split(/\r?\n/).map(line=>line.trim()).filter(Boolean)
+  const label=normalizeOcrText(selectedLabel)
+  let section='other'
+  const result=[]
+  for(let index=0;index<lines.length;index++){
+    section=documentSectionForLine(lines[index],section)
+    if(!normalizeOcrText(lines[index]).includes(label))continue
+    const context=lines.slice(Math.max(0,index-2),Math.min(lines.length,index+3))
+    const line=lines[index]
+    const hasDate=/\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2},?\s+\d{4})\b/i.test(line)
+    const hasQuantity=/\b\d+\s*(?:x|@)\s*(?:USD|EUR|GBP|JPY|[$€£¥])?\s*\d/i.test(line)
+    const sourceRole=hasDate?'detail':hasQuantity?'summary':section
+    result.push({occurrence:result.length+1,line,sourceRole,context:context.join('\n')})
+  }
+  return result
+}
+function amountsInLine(line){
+  return [...str(line).matchAll(/-?\d{1,3}(?:,\d{3})*\.\d{2}/g)].map(match=>Number(match[0].replace(/,/g,''))).filter(Number.isFinite)
+}
+function reconcileChargeBlocks(blocks){
+  const detail=blocks.filter(block=>block.sourceRole==='detail')
+  const summary=blocks.filter(block=>block.sourceRole==='summary')
+  const chosen=detail.length?detail:summary.length?summary:blocks.filter(block=>block.sourceRole!=='payment')
+  const seen=new Set()
+  return chosen.filter(block=>{
+    const key=`${normalizeOcrText(block.evidenceQuote)}|${block.effectiveAmount.toFixed(2)}|${block.quantity}`
+    if(seen.has(key))return false
+    seen.add(key);return true
   })
 }
 function fallbackOccurrenceAggregation(documentText,selectedLabel){
-  const currency=detectDocumentCurrency(documentText),windows=chargeOccurrenceWindows(documentText,selectedLabel),matches=[]
-  for(const window of windows){
-    const label=normalizeOcrText(selectedLabel),after=window.text.slice(window.text.indexOf(label)+label.length)
-    const values=[...after.matchAll(/-?\d{1,3}(?:,\d{3})*\.\d{2}/g)].map(match=>Number(match[0].replace(/,/g,''))).filter(Number.isFinite)
-    if(values.length)matches.push({amount:values[0],evidence:window.text})
+  const currency=detectDocumentCurrency(documentText)
+  const occurrences=chargeOccurrenceWindows(documentText,selectedLabel)
+  const raw=[]
+  for(const occurrence of occurrences){
+    const values=amountsInLine(occurrence.line)
+    if(!values.length)continue
+    const amount=values[values.length-1]
+    raw.push({evidenceQuote:occurrence.line,effectiveAmount:amount,quantity:1,role:'single-charge',sourceRole:occurrence.sourceRole})
   }
+  const matches=reconcileChargeBlocks(raw)
   const grouped=new Map()
-  for(const match of matches){const key=match.amount.toFixed(2),current=grouped.get(key)||{unitAmount:match.amount,count:0,subtotal:0};current.count+=1;current.subtotal=Math.round((current.subtotal+match.amount)*100)/100;grouped.set(key,current)}
-  return{selectedLabel:str(selectedLabel),currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:matches.length,totalAmount:Math.round(matches.reduce((sum,match)=>sum+match.amount,0)*100)/100,amountGroups:[...grouped.values()],evidenceLines:matches.map(match=>match.evidence)}
+  for(const match of matches){const key=match.effectiveAmount.toFixed(2),current=grouped.get(key)||{unitAmount:match.effectiveAmount,count:0,subtotal:0};current.count+=1;current.subtotal=Math.round((current.subtotal+match.effectiveAmount)*100)/100;grouped.set(key,current)}
+  return{selectedLabel:str(selectedLabel),currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:matches.length,totalAmount:Math.round(matches.reduce((sum,match)=>sum+match.effectiveAmount,0)*100)/100,amountGroups:[...grouped.values()],evidenceLines:matches.map(match=>match.evidenceQuote)}
 }
 function validateChargeBlocks(raw,documentText,selectedLabel){
   const text=normalizeOcrText(documentText),label=normalizeOcrText(selectedLabel),blocks=Array.isArray(raw?.blocks)?raw.blocks:[],valid=[]
   for(const block of blocks){
-    const quote=normalizeOcrText(block?.evidenceQuote),effectiveAmount=Number(block?.effectiveAmount),quantity=Number(block?.quantity||1),role=str(block?.role)
-    if(!quote||!text.includes(quote)||!quote.includes(label)||!Number.isFinite(effectiveAmount)||!Number.isFinite(quantity)||quantity<=0)continue
+    const quote=str(block?.evidenceQuote).trim(),normalizedQuote=normalizeOcrText(quote),effectiveAmount=Number(block?.effectiveAmount),quantity=Number(block?.quantity||1),role=str(block?.role),sourceRole=str(block?.sourceRole)
+    if(!quote||!text.includes(normalizedQuote)||!normalizedQuote.includes(label)||!Number.isFinite(effectiveAmount)||!Number.isFinite(quantity)||quantity<=0)continue
     if(!['recurring-charge','single-charge','quantity-subtotal','adjustment','refund'].includes(role))continue
-    const numericTokens=[...quote.matchAll(/-?\d{1,3}(?:,\d{3})*\.\d{2}/g)].map(match=>Number(match[0].replace(/,/g,'')))
+    if(!['detail','summary','other'].includes(sourceRole))continue
+    const numericTokens=amountsInLine(quote)
     if(!numericTokens.some(value=>Math.abs(Math.abs(value)-Math.abs(effectiveAmount))<0.001))continue
-    valid.push({evidenceQuote:quote,effectiveAmount:Math.round(effectiveAmount*100)/100,quantity,role})
+    valid.push({evidenceQuote:quote,effectiveAmount:Math.round(effectiveAmount*100)/100,quantity,role,sourceRole})
   }
-  return valid
+  return reconcileChargeBlocks(valid)
 }
 function aggregateValidatedBlocks(documentText,selectedLabel,blocks){
   const currency=detectDocumentCurrency(documentText),grouped=new Map(),evidenceLines=[]
@@ -100,54 +134,41 @@ function aggregateValidatedBlocks(documentText,selectedLabel,blocks){
   }
   return{selectedLabel:str(selectedLabel),currencyCode:currency.code,currencySymbol:currency.symbol,lineCount:blocks.reduce((sum,block)=>sum+block.quantity,0),totalAmount:Math.round(blocks.reduce((sum,block)=>sum+block.effectiveAmount,0)*100)/100,amountGroups:[...grouped.values()],evidenceLines}
 }
-const IDENTIFIER_RULES={
-  hotel:[
-    {type:'FOLIO_NUMBER',label:'Folio Number',pattern:/\bFolio\s*(?:Number|No\.?|#)?\s*[:#-]?\s*([A-Z0-9-]{3,})/i,priority:1},
-    {type:'CONFIRMATION_NUMBER',label:'Confirmation Number',pattern:/\bConfirmation\s*(?:Number|No\.?|#|Code)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:2},
-    {type:'RESERVATION_NUMBER',label:'Reservation Number',pattern:/\bReservation\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3},
-    {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:4}
-  ],
-  'rental-car':[
-    {type:'RENTAL_AGREEMENT_NUMBER',label:'Rental Agreement Number',pattern:/\b(?:Rental\s+Agreement|Rental\s+Record|Agreement)\s*(?:Number|No\.?|#)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:1},
-    {type:'RESERVATION_NUMBER',label:'Reservation Number',pattern:/\bReservation\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:2},
-    {type:'CONFIRMATION_NUMBER',label:'Confirmation Number',pattern:/\bConfirmation\s*(?:Number|No\.?|#|Code)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3},
-    {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:4}
-  ],
-  airline:[
-    {type:'TICKET_NUMBER',label:'Ticket Number',pattern:/\bTicket\s*(?:Number|No\.?|#)?\s*[:#-]?\s*([A-Z0-9-]{6,})/i,priority:1},
-    {type:'PNR',label:'PNR',pattern:/\b(?:PNR|Booking\s+Reference)\s*[:#-]?\s*([A-Z0-9]{5,8})/i,priority:2},
-    {type:'CONFIRMATION_NUMBER',label:'Confirmation Number',pattern:/\bConfirmation\s*(?:Number|No\.?|#|Code)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3}
-  ],
-  retail:[
-    {type:'ORDER_NUMBER',label:'Order Number',pattern:/\bOrder\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:1},
-    {type:'INVOICE_NUMBER',label:'Invoice Number',pattern:/\bInvoice\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:2},
-    {type:'TRANSACTION_ID',label:'Transaction ID',pattern:/\bTransaction\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3},
-    {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:4}
-  ],
-  payment:[
-    {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:1},
-    {type:'TRANSACTION_ID',label:'Transaction ID',pattern:/\bTransaction\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:2},
-    {type:'RECEIPT_NUMBER',label:'Receipt Number',pattern:/\bReceipt\s*(?:Number|No\.?|#|ID)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:3}
-  ]
+const IDENTIFIER_SPECS={
+  hotel:[['FOLIO_NUMBER','Folio Number',/folio\s*(?:number|no\.?|#)?/i,1],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,2],['RESERVATION_NUMBER','Reservation Number',/reservation\s*(?:number|no\.?|#|id)?/i,3],['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,4]],
+  'rental-car':[['RENTAL_AGREEMENT_NUMBER','Rental Agreement Number',/(?:rental\s+agreement|rental\s+record|agreement)\s*(?:number|no\.?|#)?/i,1],['RESERVATION_NUMBER','Reservation Number',/reservation\s*(?:number|no\.?|#|id)?/i,2],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,3],['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,4]],
+  airline:[['TICKET_NUMBER','Ticket Number',/ticket\s*(?:number|no\.?|#)?/i,1],['PNR','PNR',/(?:pnr|booking\s+reference)/i,2],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,3]],
+  retail:[['ORDER_NUMBER','Order Number',/order\s*(?:number|no\.?|#|id)?/i,1],['INVOICE_NUMBER','Invoice Number',/invoice\s*(?:number|no\.?|#|id)?/i,2],['TRANSACTION_ID','Transaction ID',/transaction\s*(?:id|number|no\.?|#)/i,3],['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,4]],
+  payment:[['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,1],['TRANSACTION_ID','Transaction ID',/transaction\s*(?:id|number|no\.?|#)/i,2],['RECEIPT_NUMBER','Receipt Number',/receipt\s*(?:number|no\.?|#|id)?/i,3]]
 }
-const GENERIC_IDENTIFIER_RULES=[
-  {type:'REFERENCE_ID',label:'Reference ID',pattern:/\bReference\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:50},
-  {type:'TRANSACTION_ID',label:'Transaction ID',pattern:/\bTransaction\s*(?:ID|Number|No\.?|#)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:51},
-  {type:'CONFIRMATION_NUMBER',label:'Confirmation Number',pattern:/\bConfirmation\s*(?:Number|No\.?|#|Code)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i,priority:52}
-]
-function selectPrimaryIdentifier(documentText,caseType){
-  const text=str(documentText),rules=[...(IDENTIFIER_RULES[caseType]||[]),...GENERIC_IDENTIFIER_RULES],seen=new Set(),candidates=[]
-  for(const rule of rules){
-    const match=rule.pattern.exec(text)
-    if(!match)continue
-    const value=str(match[1]),key=`${rule.type}|${value}`
-    if(!value||seen.has(key))continue
-    seen.add(key)
-    const sourceLine=text.split('\n').map(line=>line.replace(/\r$/,'').trim()).find(line=>line.includes(match[0]))||str(match[0])
-    candidates.push({type:rule.type,label:rule.label,value,priority:rule.priority,source:'document',sourceLine})
+const GENERIC_IDENTIFIER_SPECS=[['REFERENCE_ID','Reference ID',/reference\s*(?:id|number|no\.?|#)/i,50],['TRANSACTION_ID','Transaction ID',/transaction\s*(?:id|number|no\.?|#)/i,51],['CONFIRMATION_NUMBER','Confirmation Number',/confirmation\s*(?:number|no\.?|#|code)?/i,52]]
+function identifierSpecs(caseType){return[...(IDENTIFIER_SPECS[caseType]||[]),...GENERIC_IDENTIFIER_SPECS]}
+function validIdentifierValue(type,value){
+  const cleanValue=str(value).replace(/^[#:\-\s]+|[#:\-\s]+$/g,'')
+  if(!cleanValue||cleanValue.length<3||cleanValue.length>40)return false
+  if(!/\d/.test(cleanValue))return false
+  if(/^(?:sacramento|portland|airport|natomas|guest|folio|confirmation|number)$/i.test(cleanValue))return false
+  if(type==='PNR')return/^[A-Z0-9]{5,8}$/i.test(cleanValue)
+  return/^[A-Z0-9][A-Z0-9\-]{2,39}$/i.test(cleanValue)
+}
+function identifierContexts(documentText,caseType){
+  const lines=str(documentText).split(/\r?\n/).map(line=>line.trim()).filter(Boolean),contexts=[]
+  for(const [type,label,pattern,priority] of identifierSpecs(caseType)){
+    lines.forEach((line,index)=>{if(pattern.test(line))contexts.push({type,label,priority,line,index,nearby:lines.slice(Math.max(0,index-1),Math.min(lines.length,index+2))})})
   }
-  candidates.sort((a,b)=>a.priority-b.priority)
-  return{caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:[]}
+  return contexts
+}
+function deterministicIdentifierFallback(documentText,caseType){
+  const candidates=[]
+  for(const context of identifierContexts(documentText,caseType)){
+    const spec=identifierSpecs(caseType).find(item=>item[0]===context.type&&item[1]===context.label)
+    if(!spec)continue
+    const tail=context.line.replace(spec[2],' ').replace(/^\s*[:#-]?\s*/,'').trim()
+    const value=(tail.match(/\b[A-Z0-9][A-Z0-9-]{2,39}\b/i)||[])[0]||''
+    if(validIdentifierValue(context.type,value))candidates.push({type:context.type,label:context.label,value,priority:context.priority,source:'document',sourceLine:context.line})
+  }
+  const unique=[...new Map(candidates.map(item=>[`${item.type}|${item.value}`,item])).values()].sort((a,b)=>a.priority-b.priority)
+  return{caseType,candidates:unique,primaryIdentifier:unique[0]||null,supplementaryIdentifiers:unique.slice(1,4)}
 }
 function normalize(raw,model,sourceText=''){
   const facts=Array.isArray(raw?.confirmedFacts)?raw.confirmedFacts.map(x=>({label:str(x?.label),value:str(x?.value),source:['document','message','user'].includes(x?.source)?x.source:'document'})).filter(x=>x.label&&x.value):[]
@@ -671,18 +692,19 @@ ${documentText}`
       const windows=chargeOccurrenceWindows(documentText,selectedLabel)
       const blockSystem=`Structure every occurrence of the selected disputed charge into independent charge blocks. Return JSON only.
 OUTPUT SHAPE:
-{"blocks":[{"evidenceQuote":"","role":"recurring-charge|single-charge|quantity-subtotal|adjustment|refund","quantity":1,"unitAmount":0,"subtotal":0,"effectiveAmount":0}]}
+{"blocks":[{"evidenceQuote":"","sourceRole":"detail|summary|other","role":"recurring-charge|single-charge|quantity-subtotal|adjustment|refund","quantity":1,"unitAmount":0,"subtotal":0,"effectiveAmount":0}]}
 RULES:
 - Use only OCR_TEXT and SELECTED_LABEL.
-- Find every occurrence of SELECTED_LABEL, including repeated occurrences inside one long OCR line.
+- OCCURRENCE_WINDOWS already identifies each label occurrence and its likely section. Classify sourceRole from the document section: dated itemized rows are detail; SUMMARY/subtotal recaps are summary.
 - evidenceQuote must be an exact contiguous quote from OCR_TEXT containing SELECTED_LABEL and the amount used for that block.
-- If one occurrence is a normal repeated charge, quantity is 1 and effectiveAmount is that occurrence's charge.
+- A summary row that repeats a detail charge is not an additional charge. Return it as sourceRole summary; the program will reconcile it against detail rows.
+- If one occurrence is a normal dated charge, sourceRole is detail, quantity is 1, and effectiveAmount is that occurrence's charge.
 - If one occurrence states quantity, unit price, and subtotal, use role quantity-subtotal and effectiveAmount equal to the subtotal. Do not add both unit price and subtotal.
 - If the same selected charge appears separately for different dates, segments, passengers, or rental days, return one block per occurrence.
 - Include a negative adjustment or refund only when the quote explicitly connects it to SELECTED_LABEL. Use a negative effectiveAmount.
 - Do not infer quantity from date ranges, hotel nights, rental duration, flight segments, or passenger count.
 - Do not include taxes unless the quote explicitly identifies that tax as part of SELECTED_LABEL.
-- Ignore unrelated totals, balances, deposits, payment lines, and card transactions.
+- Ignore unrelated totals, balances, deposits, payment lines, and card transactions. Never multiply a one-time fee by hotel nights or date range.
 - Do not draft text or decide whether the charge is valid.`
       const structured=await call(key,model,[{role:'system',content:blockSystem},{role:'user',content:`SELECTED_LABEL:\n${selectedLabel}\n\nOCCURRENCE_WINDOWS:\n${JSON.stringify(windows)}\n\nOCR_TEXT:\n${documentText}`}],2200,0)
       const blocks=validateChargeBlocks(structured,documentText,selectedLabel)
@@ -773,7 +795,37 @@ ${documentText}`}],900,0)
     if(i.mode==='select-primary-identifier'){
       const documentText=str(i.documentText),caseType=str(i.caseType)||'other'
       if(!documentText){res.status(400).json({error:'OCR text is required.'});return}
-      const result=selectPrimaryIdentifier(documentText,caseType)
+      const contexts=identifierContexts(documentText,caseType)
+      const identifierSystem=`Select transaction identifiers by understanding label-value pairs in the CURRENT document layout. Return JSON only.
+OUTPUT SHAPE:
+{"candidates":[{"type":"","label":"","value":"","priority":1,"evidenceQuote":""}]}
+RULES:
+- Use only IDENTIFIER_CONTEXTS and OCR_TEXT.
+- A value must belong to the printed label in the same row or clearly paired local block. Do not take a city, property name, heading, date, amount, room number, or nearby column value.
+- Preserve the exact identifier label and value. Folio Number must remain Folio Number.
+- Folio, confirmation, reservation, agreement, ticket, order, invoice, transaction and reference identifiers must contain at least one digit.
+- evidenceQuote must be an exact OCR line containing both the label and its value whenever possible.
+- Use the supplied type, label and priority from IDENTIFIER_CONTEXTS. Do not invent an identifier type.
+- Return no candidate when the value is ambiguous.`
+      let result
+      try{
+        const chosen=await call(key,model,[{role:'system',content:identifierSystem},{role:'user',content:`CASE_TYPE:${caseType}
+IDENTIFIER_CONTEXTS:${JSON.stringify(contexts)}
+OCR_TEXT:
+${documentText}`}],1200,0)
+        const allowed=new Map(identifierSpecs(caseType).map(item=>[item[0],{label:item[1],priority:item[3]}]))
+        const seen=new Set(),candidates=[]
+        for(const item of Array.isArray(chosen?.candidates)?chosen.candidates:[]){
+          const type=str(item?.type),value=str(item?.value),evidenceQuote=str(item?.evidenceQuote),spec=allowed.get(type)
+          if(!spec||!validIdentifierValue(type,value)||!orderedEvidenceMatch(documentText,value))continue
+          if(evidenceQuote&&(!orderedEvidenceMatch(documentText,evidenceQuote)||!normalizeEvidenceText(evidenceQuote).includes(normalizeEvidenceText(value))))continue
+          const dedupe=`${type}|${value}`;if(seen.has(dedupe))continue;seen.add(dedupe)
+          candidates.push({type,label:spec.label,value,priority:spec.priority,source:'document',sourceLine:evidenceQuote||evidenceLinesForLabel(documentText,value,1)[0]||value})
+        }
+        candidates.sort((a,b)=>a.priority-b.priority)
+        result={caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:candidates.slice(1,4)}
+      }catch(error){console.warn('AI identifier pairing failed; using strict same-line fallback.',error);result=deterministicIdentifierFallback(documentText,caseType)}
+      if(!result.primaryIdentifier)result=deterministicIdentifierFallback(documentText,caseType)
       res.status(200).json(result);return
     }
     if(i.mode==='translate'){

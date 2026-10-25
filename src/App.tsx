@@ -216,7 +216,12 @@ function App() {
   }
   const contactCandidateTitle = (candidate: { purpose?: string; searchEntity?: string; locationName?: string; label: string; reason?: string; sourceHost?: string }) => {
     if (candidate.purpose === 'case-contact') return ui({en:'Billing / refund contact route',ja:'請求・返金に関する問い合わせ先',es:'Contacto para facturación o reembolso'})
+    if (candidate.purpose === 'billing-form') return ui({en:'Official billing form',ja:'請求に関する公式フォーム',es:'Formulario oficial de facturación'})
+    if (candidate.purpose === 'contact-form') return ui({en:'Official contact form',ja:'公式問い合わせフォーム',es:'Formulario oficial de contacto'})
+    if (candidate.purpose === 'official-email') return ui({en:'Official email contact page',ja:'公式メール掲載ページ',es:'Página oficial con correo de contacto'})
+    if (candidate.purpose === 'billing-guide') return ui({en:'Official billing / refund guidance',ja:'請求・返金に関する公式案内',es:'Guía oficial de facturación o reembolso'})
     if (candidate.purpose === 'location-page') return ui({en:'Official location or property page',ja:'利用施設・営業所の公式ページ',es:'Página oficial de la ubicación'})
+    if (candidate.purpose === 'phone-contact-page') return ui({en:'Official phone support',ja:'公式電話サポート',es:'Soporte telefónico oficial'})
     if (candidate.purpose === 'general-support') return ui({en:'Official customer support',ja:'公式カスタマーサポート',es:'Atención al cliente oficial'})
     if (candidate.purpose === 'source-page') return ui({en:'Website printed in the source',ja:'資料に記載されたWebページ',es:'Página indicada en el documento'})
     return candidate.label
@@ -225,7 +230,12 @@ function App() {
     const target = [candidate.searchEntity, candidate.locationName].filter(Boolean).join(' / ')
     if (candidate.reason && candidate.sourceHost) return `${candidate.reason} (${candidate.sourceHost})`
     if (candidate.purpose === 'case-contact') return ui({en:`Searches for the most relevant official form or email route for this case. Target: ${target}`,ja:`今回の請求・返金に近い公式フォームまたはメール窓口を探します。対象：${target}`,es:`Busca el formulario o correo oficial más relacionado con este caso. Objetivo: ${target}`})
+    if (candidate.purpose === 'billing-form') return ui({en:'This official page contains a billing inquiry form for charges or a past stay.',ja:'請求内容や過去の利用について送信できる公式フォームです。',es:'Esta página oficial contiene un formulario para consultas de facturación.'})
+    if (candidate.purpose === 'contact-form') return ui({en:'This official page contains a general contact form.',ja:'問い合わせ内容を送信できる公式フォームです。',es:'Esta página oficial contiene un formulario general de contacto.'})
+    if (candidate.purpose === 'official-email') return ui({en:'This official page publishes an email contact route.',ja:'公式サイト上に連絡用メールが掲載されています。',es:'Esta página oficial publica un correo de contacto.'})
+    if (candidate.purpose === 'billing-guide') return ui({en:'This official page explains billing or refund handling and may link to the correct form.',ja:'請求・返金の対応方法と適切なフォームへの導線を案内する公式ページです。',es:'Esta página oficial explica cómo resolver problemas de facturación o reembolso.'})
     if (candidate.purpose === 'location-page') return ui({en:`Use the official location page to confirm you selected the correct branch or property. Target: ${target}`,ja:`個別の施設・営業所ページで、利用した場所と一致するか確認できます。対象：${target}`,es:`Utiliza la página oficial de la ubicación para confirmar la sucursal correcta. Objetivo: ${target}`})
+    if (candidate.purpose === 'phone-contact-page') return ui({en:'This official page mainly provides phone support. It is shown only when a better form or email route was not confirmed.',ja:'電話窓口が中心の公式ページです。フォームやメールを確認できなかった場合に表示します。',es:'Esta página oficial ofrece principalmente soporte telefónico.'})
     if (candidate.purpose === 'general-support') return ui({en:`Fallback route when a dedicated billing form is not available. Target: ${target}`,ja:`請求専用窓口が見つからない場合の公式サポート候補です。対象：${target}`,es:`Ruta alternativa si no existe un formulario específico de facturación. Objetivo: ${target}`})
     return ui({en:'This URL was printed in the uploaded source. Confirm that it is the correct company page before using it.',ja:'アップロード資料に記載されていたURLです。利用前に正しい企業ページか確認してください。',es:'Esta URL aparecía en el documento. Confirma que sea la página correcta antes de usarla.'})
   }
