@@ -254,6 +254,46 @@ function validatedTextLayoutSelection(raw,documentText,caseType){
   return{caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:candidates.slice(1,4)}
 }
 
+function isClearlyAnotherFieldLabel(value){
+  const text=str(value)
+  if(!text)return false
+  return /(?:guest|customer|driver|renter|name|date|time|location|station|branch|airport|vehicle|car|rate|amount|total|subtotal|tax|fee|charge|room|arrival|departure|returned|rented|pickup|pick-up|dropoff|drop-off|agreement|reservation|confirmation|reference|transaction|invoice|ticket|folio)\s*(?:number|no\.?|#|id|date|time|name|on)?\s*:?$/i.test(text)
+}
+function isUnsafeAdjacentIdentifierValue(value){
+  const text=str(value)
+  if(!text||!/[0-9]/.test(text)||text.length<4||text.length>40)return true
+  if(isClearlyAnotherFieldLabel(text))return true
+  if(/(?:USD|EUR|GBP|JPY|CAD|AUD)|[$€£¥]|%/i.test(text))return true
+  if(/^\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}(?:\s+\d{1,2}:\d{2})?$/i.test(text))return true
+  if(/^\d{1,2}:\d{2}(?:\s*[AP]M)?$/i.test(text))return true
+  if(/^[A-Z\s]+,\s*[A-Z]{2}$/i.test(text))return true
+  if(!/^[A-Z0-9][A-Z0-9-]{3,39}$/i.test(text))return true
+  return false
+}
+function rentalAdjacentIdentifierFallback(documentText,caseType){
+  if(caseType!=='rental-car')return{caseType,candidates:[],primaryIdentifier:null,supplementaryIdentifiers:[]}
+  const lines=str(documentText).split(/\r?\n/).map(line=>str(line)).filter(Boolean)
+  const specs=[
+    ['RENTAL_AGREEMENT_NUMBER','Rental Agreement Number',/^(?:rental\s+agreement|rental\s+record|agreement)\s*(?:number|no\.?|#)?\s*:?$/i,1],
+    ['RESERVATION_NUMBER','Reservation Number',/^reservation\s*(?:number|no\.?|#|id)\s*:?$/i,2],
+    ['CONFIRMATION_NUMBER','Confirmation Number',/^confirmation\s*(?:number|no\.?|#|code)?\s*:?$/i,3],
+    ['REFERENCE_ID','Reference ID',/^reference\s*(?:id|number|no\.?|#)\s*:?$/i,4]
+  ]
+  const candidates=[],seen=new Set()
+  for(let index=0;index<lines.length-1;index++){
+    const match=specs.find(spec=>spec[2].test(lines[index]))
+    if(!match)continue
+    const next=lines[index+1]
+    if(isUnsafeAdjacentIdentifierValue(next)||!validIdentifierValue(match[0],next))continue
+    const dedupe=`${match[0]}|${next}`
+    if(seen.has(dedupe))continue
+    seen.add(dedupe)
+    candidates.push({type:match[0],label:match[1],value:next,priority:match[3],source:'document',sourceLine:`${lines[index]} -> ${next}`,evidence:{mode:'rental-adjacent-line',labelLine:index+1,valueLine:index+2}})
+  }
+  candidates.sort((a,b)=>a.priority-b.priority)
+  return{caseType,candidates,primaryIdentifier:candidates[0]||null,supplementaryIdentifiers:candidates.slice(1,4)}
+}
+
 function deterministicIdentifierFallback(documentText,caseType){
   const candidates=[]
   for(const context of identifierContexts(documentText,caseType)){
@@ -946,6 +986,9 @@ RULES:
           if(result.primaryIdentifier)selectionMode='text-layout'
         }catch(error){console.warn('Text-layout identifier pairing failed.',error)}
       }
+      // Rental-only deterministic fallback: accept a strictly recognized label and only its immediately following non-empty line.
+      // The value must contain digits and must not be another field label, date/time, money, percentage, or location.
+      if(!result.primaryIdentifier){result=rentalAdjacentIdentifierFallback(documentText,caseType);if(result.primaryIdentifier)selectionMode='rental-adjacent-line'}
       // Final fallback accepts only an explicit label and value on the same OCR line.
       if(!result.primaryIdentifier){result=deterministicIdentifierFallback(documentText,caseType);if(result.primaryIdentifier)selectionMode='same-line'}
       const identifierLines=documentText.split(/\r?\n/).map((text,index)=>({lineNumber:index+1,text:text.trim()})).filter(item=>item.text)
