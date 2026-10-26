@@ -948,6 +948,22 @@ RULES:
       }
       // Final fallback accepts only an explicit label and value on the same OCR line.
       if(!result.primaryIdentifier){result=deterministicIdentifierFallback(documentText,caseType);if(result.primaryIdentifier)selectionMode='same-line'}
+      const identifierLines=documentText.split(/\r?\n/).map((text,index)=>({lineNumber:index+1,text:text.trim()})).filter(item=>item.text)
+      const identifierLabelLines=identifierLines.filter(item=>/folio|confirmation|reservation|identification|reference|transaction|invoice|ticket|pnr|agreement/i.test(item.text))
+      const diagnosticLineNumbers=new Set(identifierLabelLines.flatMap(item=>[item.lineNumber-3,item.lineNumber-2,item.lineNumber-1,item.lineNumber,item.lineNumber+1,item.lineNumber+2,item.lineNumber+3]))
+      const identifierDiagnosticLines=identifierLines.filter(item=>diagnosticLineNumbers.has(item.lineNumber)).slice(0,100)
+      console.info('Identifier selection diagnostics',{
+        caseType,
+        receivedOcrPages:Array.isArray(i.ocrPages),
+        ocrPageCount:Array.isArray(i.ocrPages)?i.ocrPages.length:0,
+        detectionCounts:Array.isArray(i.ocrPages)?i.ocrPages.map(page=>({page:Number(page?.page)||0,count:Array.isArray(page?.detections)?page.detections.length:0})):[],
+        identifierLabelLines,
+        identifierDiagnosticLines,
+        coordinateContexts:coordinateContexts.map(context=>({type:context.type,label:context.label,page:context.page,labelText:context.labelText,candidates:context.candidates})),
+        selectionMode,
+        allValidatedCandidates:result.candidates,
+        primaryIdentifier:result.primaryIdentifier
+      })
       console.info('Identifier selection completed',{caseType,coordinateContextCount:coordinateContexts.length,selectionMode,primaryIdentifier:result.primaryIdentifier?{type:result.primaryIdentifier.type,label:result.primaryIdentifier.label,value:result.primaryIdentifier.value,evidence:result.primaryIdentifier.evidence||null}:null})
       res.status(200).json(result);return
     }
