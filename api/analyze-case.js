@@ -662,6 +662,30 @@ function removeUnverifiedSenderPlaceholders(value){
   const placeholder=/^\s*(?:\[(?:sender|your|guest|customer)\s*(?:name|information|contact information)?\]|<(?:sender|your)[ _-]?name>|(?:sender|your)[ _-]?name)\s*$/i
   return cleanDraftText(value).split(/\r?\n/).filter(line=>!placeholder.test(line)).join('\n').replace(/\n{3,}/g,'\n\n').trim()
 }
+function translationLanguageCheck(source,targetLanguage,translated){
+  const sourceText=normalizedProtected(source).toLowerCase()
+  const targetText=normalizedProtected(translated).toLowerCase()
+  if(!targetText)return{ok:false,reason:'Translated body is empty.'}
+  if(targetLanguage==='Spanish'){
+    const spanishSignals=(targetText.match(/\b(?:el|la|los|las|un|una|de|del|que|por|para|con|sin|fue|se|solicito|reembolso|cargo|habitación|hotel|limpieza|gracias)\b/g)||[]).length
+    const unchanged=sourceText===targetText
+    const englishSentenceStillPresent=/\b(?:i stayed|i did not|i was charged|i don't understand|if it was|i request|i would like)\b/i.test(translated)
+    if(unchanged||englishSentenceStillPresent||spanishSignals<3)return{ok:false,reason:'The main body was not fully translated into Spanish.'}
+  }
+  if(targetLanguage==='English'){
+    const japaneseStillPresent=/[ぁ-んァ-ヶ一-龯]/.test(translated)
+    const englishSignals=(targetText.match(/\b(?:the|a|an|i|was|charged|refund|please|hotel|fee|thank)\b/g)||[]).length
+    if(japaneseStillPresent||englishSignals<2)return{ok:false,reason:'The main body was not fully translated into English.'}
+  }
+  if(targetLanguage==='Japanese'&&!/[ぁ-んァ-ヶ一-龯]/.test(translated))return{ok:false,reason:'The main body was not translated into Japanese.'}
+  return{ok:true,reason:''}
+}
+function translationValueCheck(source,translated){
+  const sourceMoney=new Map(extractMoney(source).map(item=>[moneyKey(item),item]))
+  const translatedMoney=new Map(extractMoney(translated).map(item=>[moneyKey(item),item]))
+  for(const key of sourceMoney.keys())if(!translatedMoney.has(key))return{ok:false,reason:`A monetary value or currency changed during translation: ${key}`}
+  return{ok:true,reason:''}
+}
 function safeProtectedDraft(data,language){
   const facts=data.facts.map(fact=>`${localizedFactLabel(fact,language)}: ${safeFactValue(fact)}`).filter(line=>!/[：:]\s*$/.test(line))
   const statements=data.statements.map(statement=>`- ${statement}`)
@@ -1012,24 +1036,49 @@ RULES:
     }
     if(i.mode==='translate'){
       if(!str(i.approvedSubject)||!str(i.approvedBody)){res.status(400).json({error:'Approved text is required.'});return}
-      const translationSystem=`You convert the CURRENT approved consumer inquiry from ${ui} to ${recipient}. Return JSON only as {"subject":"","body":""}.
-CONTENT:
-- Use only the current approved subject and body. Never reuse examples, prior cases, or another industry.
-- Preserve every fact, official name, identifier type and value, date, amount, currency, quantity, negation, and requested action.
+      const approvedSubject=str(i.approvedSubject)
+      const approvedBody=str(i.approvedBody)
+      const sourceCore=extractEditableCore(approvedBody,languageCode)
+      if(!sourceCore){res.status(400).json({error:'Approved message body is empty.'});return}
+      const translationSystem=`Translate the CURRENT approved consumer inquiry from ${ui} to ${recipient}. Return JSON only as {"subject":"","bodyCore":""}.
+TRANSLATE COMPLETELY
+- Translate every natural-language sentence in both the subject and bodyCore into ${recipient}.
+- Do not leave the main body in ${ui}. A partially translated email is invalid.
+- bodyCore must contain only the translated editable content. Do not add a salutation, closing, or signature block; the program adds them.
+PRESERVE EXACTLY
+- Preserve official names, personal names, identifier labels and values, dates, amounts, currencies, quantities, negations, conditions, and requested actions.
 - A Folio Number remains Folio Number; a Reservation ID remains Reservation ID; a Rental Agreement Number remains Rental Agreement Number.
-- Every monetary value must keep an explicit currency symbol or ISO code. Never output a bare monetary number.
-- Do not add allegations, requests, evidence, promises, deadlines, or explanations.
-FORMAT:
-- Produce a complete, send-ready message with exactly one salutation and one closing/signature block.
-- Never address the message to the customer, guest, passenger, renter, or account holder.
-- English: "Dear [Organization] Team," or "To whom it may concern,"; then the body; "Thank you for your assistance."; "Best regards,". Add the sender's actual name only when it is explicitly verified in the approved text. Never output placeholders such as [Your Name] or [Your Contact Information].
-- Japanese: "[Organization] ご担当者様" or "ご担当者様"; end with a natural polite request. Add an actual sender name only when it is explicitly verified; never output a name/contact placeholder.
-- Spanish: "Al equipo de [Organización]:" or "A quien corresponda:"; "Gracias por su ayuda."; "Atentamente,". Add the actual sender name only when it is explicitly verified; never output placeholders.
-- Email addresses and contact details normally belong in the email sender information or dedicated form fields, not in the message body or signature.
-- Keep the subject neutral and construct it only from the current requested action, disputed item, and exact primary identifier type/value.`
-      const result=await call(key,model,[{role:'system',content:translationSystem},{role:'user',content:`APPROVED SUBJECT:\n${i.approvedSubject}\n\nAPPROVED BODY:\n${i.approvedBody}`}],2600,0)
-      const translatedBody=removeUnverifiedSenderPlaceholders(result.body)
-      res.status(200).json({subject:str(result.subject),body:translatedBody});return
+- Preserve lines such as "Folio Number: 815204" and verified names exactly.
+- Every monetary value must retain its currency symbol or ISO code.
+CONTENT SAFETY
+- Use only SOURCE SUBJECT and SOURCE BODY CORE.
+- Do not add allegations, requests, evidence, promises, deadlines, explanations, or facts.
+- Keep the translated wording natural, polite, and professional in ${recipient}.
+- Do not output placeholders such as [Your Name] or [Your Contact Information].`
+      let lastReason=''
+      for(let attempt=1;attempt<=2;attempt++){
+        const retry=attempt===2?`
+PREVIOUS ATTEMPT FAILED: ${lastReason}
+Translate the complete natural-language body. Preserve only names, identifiers, dates, amounts, and currencies verbatim.`:''
+        const result=await call(key,model,[{role:'system',content:translationSystem+retry},{role:'user',content:`SOURCE SUBJECT:
+${approvedSubject}
+
+SOURCE BODY CORE:
+${sourceCore}`}],2600,0)
+        const translatedSubject=str(result?.subject)
+        const translatedCore=removeUnverifiedSenderPlaceholders(result?.bodyCore)
+        if(!translatedSubject||!translatedCore){lastReason='The translated subject or body was empty.';console.warn('Translation validation failed',{attempt,reason:lastReason});continue}
+        if(containsEnvelopeText(translatedCore,i.recipientLanguage)){lastReason='The translated core included a reserved greeting, closing, or signature.';console.warn('Translation validation failed',{attempt,reason:lastReason});continue}
+        const languageCheck=translationLanguageCheck(sourceCore,recipient,translatedCore)
+        if(!languageCheck.ok){lastReason=languageCheck.reason;console.warn('Translation validation failed',{attempt,reason:lastReason});continue}
+        const valueCheck=translationValueCheck(`${approvedSubject}
+${sourceCore}`,`${translatedSubject}
+${translatedCore}`)
+        if(!valueCheck.ok){lastReason=valueCheck.reason;console.warn('Translation validation failed',{attempt,reason:lastReason});continue}
+        const composed=composeMail({subject:translatedSubject,body:translatedCore},i.recipientLanguage)
+        res.status(200).json({subject:composed.subject,body:composed.body,translationMode:'validated-core',validationAttempts:attempt});return
+      }
+      throw new Error(`Translation could not be completed safely: ${lastReason||'The translated body could not be validated.'}`)
     }
     const schema='{"confirmedFacts":[{"label":"","value":"","source":"document|message|user"}],"userStatements":[""],"requestedOutcome":"","readiness":{"targetIdentified":true,"transactionIdentified":true,"issueIdentified":true,"outcomeIdentified":true,"missingFields":[{"key":"","label":"","reason":"","alternatives":[""]}]},"messageSource":{"senderName":"","senderEmail":"","replyTo":"","subject":"","date":"","isForwarded":false,"isNoReply":false,"noReplyReason":"","attachments":[""]},"referenceInformation":[{"label":"","value":"","source":"document|message|user"}],"contactCandidates":[{"label":"","url":"","reason":"","kind":"official-site|search","recommended":true}],"draft":{"subject":"","body":""}}'
     const system=`Use ${ui}. Return JSON only in the supplied shape.
